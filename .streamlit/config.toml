@@ -1,0 +1,23 @@
+# Streamlit base theme. The detailed Linear-inspired styling is injected as CSS
+# from ui.py; these values make the built-in widgets match it.
+
+[theme]
+base = "dark"
+primaryColor = "#5e6ad2"
+backgroundColor = "#010102"
+secondaryBackgroundColor = "#0f1011"
+textColor = "#f7f8f8"
+font = "sans serif"
+
+[server]
+headless = true
+runOnSave = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# Jury build: hide the Deploy button and developer menu. This is a display
+# setting only - deployment itself is unaffected, and setting it back to
+# "auto" restores the toolbar.
+toolbarMode = "minimal"

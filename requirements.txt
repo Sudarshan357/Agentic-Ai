@@ -1,0 +1,16 @@
+# Multi-Step Research Summarizer Graph - Python dependencies
+#
+# Install with:
+#     pip install -r requirements.txt
+#
+# On Windows, if pip tries to build a package from source and fails, add
+# --only-binary=:all: to force prebuilt wheels:
+#     pip install --only-binary=:all: -r requirements.txt
+#
+# No paid API keys are required. The model runs locally through Ollama.
+
+streamlit>=1.36
+langgraph>=0.2
+langchain-core>=0.3
+langchain-ollama>=0.2
+pypdf>=4          # text extraction from uploaded PDF sources

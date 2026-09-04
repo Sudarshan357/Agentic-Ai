@@ -1,0 +1,44 @@
+TITLE: Electric Vehicles and Tailpipe Emissions
+SOURCE TYPE: Environmental research briefing
+TOPIC: Impact of Electric Vehicles on the Environment
+
+1. TAILPIPE EMISSIONS
+
+Battery electric vehicles (BEVs) do not have an internal combustion engine and do
+not burn fuel while driving. As a direct result, battery electric vehicles produce
+zero tailpipe emissions. They emit no carbon dioxide, no nitrogen oxides, and no
+particulate matter from an exhaust pipe during operation.
+
+It is important to state this precisely. "Zero tailpipe emissions" refers only to
+the emissions released at the vehicle itself while it is being driven. It does not
+mean the vehicle is responsible for zero emissions overall.
+
+2. URBAN AIR QUALITY
+
+Because they do not emit exhaust gases at street level, electric vehicles can reduce
+urban air pollution. Cities with a high share of electric vehicles have measured
+lower concentrations of nitrogen dioxide and fine particulate matter along busy
+roads. This is particularly relevant for dense city centres where traffic is the
+dominant source of local air pollution.
+
+Reduced local pollution is associated with public health benefits, including fewer
+respiratory illnesses in populations living close to major roads.
+
+3. NOT ALL EMISSIONS ARE ELIMINATED
+
+Electric vehicles still generate some non-exhaust particulate matter. Brake wear,
+tyre wear, and road surface abrasion release particles regardless of the type of
+powertrain. Regenerative braking in electric vehicles can reduce brake wear, but
+tyre wear may be comparable to or higher than conventional vehicles because electric
+vehicles are often heavier due to their battery packs.
+
+4. DEPENDENCE ON ELECTRICITY GENERATION
+
+The overall environmental impact of an electric vehicle depends partly on how the
+electricity used to charge it is generated. When an electric vehicle is charged from
+a grid dominated by coal-fired power stations, the emissions are shifted from the
+vehicle to the power plant rather than eliminated. When the grid uses a large share
+of renewable or nuclear generation, the associated emissions are considerably lower.
+
+Therefore, an electric vehicle should be described as having zero tailpipe emissions,
+not as having zero emissions or zero environmental impact.

@@ -1,0 +1,52 @@
+TITLE: Lifecycle Analysis and Net Environmental Benefits
+SOURCE TYPE: Environmental research briefing
+TOPIC: Impact of Electric Vehicles on the Environment
+
+1. THE LIFECYCLE VIEW
+
+A lifecycle assessment compares total emissions across manufacturing, operation, and
+end-of-life rather than looking at driving alone. This is the only fair way to
+compare an electric vehicle with a conventional vehicle, because the two technologies
+place their emissions at different stages of life.
+
+An electric vehicle starts with a higher manufacturing emissions burden and then
+accumulates emissions more slowly while it is driven.
+
+2. THE BREAK-EVEN POINT
+
+Because of the manufacturing debt described in the battery source, an electric
+vehicle must be driven a certain distance before its cumulative emissions fall below
+those of a comparable petrol or diesel car. This is called the break-even point or
+emissions payback distance.
+
+Published lifecycle studies typically place this break-even point somewhere between
+roughly 20,000 and 60,000 kilometres, depending heavily on the electricity mix,
+battery size, and the efficiency of the vehicle being compared against.
+
+3. OPERATIONAL EMISSIONS
+
+Electric vehicles generally have lower operational emissions than conventional
+vehicles. Electric drivetrains convert a much higher share of stored energy into
+motion than combustion engines, which lose a large fraction of fuel energy as heat.
+Over a typical vehicle lifetime, this efficiency advantage is usually large enough
+to outweigh the higher manufacturing emissions.
+
+4. ROLE OF THE ELECTRICITY MIX
+
+Electric vehicle environmental benefits can increase when electricity comes from
+renewable sources. Charging from wind, solar, hydro, or nuclear generation lowers
+operational emissions substantially and shortens the break-even distance.
+
+Conversely, on a grid dominated by coal, the lifetime advantage narrows and, in the
+most carbon-intensive grids studied, can become small.
+
+5. GEOGRAPHIC VARIATION
+
+Environmental benefits vary depending on location and electricity sources. Countries
+with low-carbon grids show large lifetime emissions reductions for electric vehicles.
+Countries with coal-heavy grids show smaller reductions. Climate also matters, since
+cold weather reduces battery range and increases energy consumption per kilometre.
+
+CONCLUSION: Across most studied regions, electric vehicles deliver a net lifecycle
+emissions benefit over comparable conventional vehicles. The size of that benefit is
+conditional, not absolute, and depends on where and how the vehicle is charged.
