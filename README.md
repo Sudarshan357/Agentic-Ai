@@ -30,59 +30,42 @@ search anywhere in the workflow.
 
 ## 2. Architecture
 
+The workflow is a **supervisor graph**. A supervisor node routes the work between
+three agents, each with one job, and a human-approval step. Every agent reports
+back to the supervisor, which picks who goes next.
+
 ```
-                          START
-                            |
-                            v
-                   +-----------------+
-                   |  read_source    |   node 1 - loads the uploaded papers
-                   +-----------------+
-                            |
-                            v
-        +---------> +-----------------+
-        |           |   summarize     |   node 2 - qwen2.5:3b writes / rewrites
-        |           +-----------------+
-        |                    |
-        |                    v
-        |           +-----------------+
-        |           |   fact_check    |   node 3 - judges each claim vs sources
-        |           +-----------------+
-        |                    |
-        |                    v
-        |        +-----------------------+
-        |        |  conditional router   |   route_after_fact_check(state)
-        |        +-----------------------+
-        |            |                |
-        +-- "summarize"            "finish"
-          unsupported claims          |
-                                      v
-                               +-------------+
-                               |  finalize   | ---> END
-                               +-------------+
+ START -> read_source -> index_sources (RAG) -> SUPERVISOR  <--+
+                                                  |           |
+              +------------+--------------+-------+------+    |
+              v            v              v              v    |
+         summarizer   fact_checker      guard      human_review
+              |            |              |              |    |
+              +------------+--------------+--------------+----+
+                                                  |
+                                     supervisor -> finalize -> END
 ```
 
-**Read → Summarize → Fact Check → Conditional Routing → Correct → Verify**
+| Part | Role |
+|---|---|
+| **supervisor** | Rule-based router. No draft → summarizer · unchecked draft → fact_checker · rejected → summarizer · verified → guard · guarded → human_review · approved → finalize. Each hand-off is one **hop**; at `max_hops` it goes straight to finalize (`HOP LIMIT REACHED`). |
+| **summarizer** (agent) | Writes and rewrites the summary with `qwen2.5:3b` from passages retrieved from Chroma. Before writing, it recalls related lessons from long-term memory and reviewer notes from the thread. |
+| **fact_checker** (agent) | Splits the draft into claims, retrieves the top-4 passages for **each claim**, and asks for a SUPPORTED / PARTIAL / UNSUPPORTED verdict. Rejected claims are saved as lessons. |
+| **guard** (agent) | Rule-based safety checks: absolute wording, numbers that don't appear in the papers, chat preambles or file names, and length. |
+| **human_review** | `interrupt()` pauses the graph. The UI shows Approve / Request changes, and the run resumes on the same thread with `Command(resume=...)`. |
 
-The edge from `fact_check` back to `summarize` is what makes this a *graph* rather
-than a script: the `summarize` node is entered from two different edges, and the
-**state** decides at runtime which one fires.
+### Memory and RAG
 
-### The state
-
-Every node receives `ResearchState` and returns a partial update that LangGraph
-merges back in. Because the state travels along every edge, the fact checker's
-feedback is already waiting for the summarizer when the loop closes.
-
-| Field | Written by | Purpose |
+| Layer | Implementation | What it holds |
 |---|---|---|
-| `source_content`, `source_documents` | `read_source` | ground truth for every check |
-| `summary`, `summary_history` | `summarize` | current and past summaries |
-| `claims`, `claims_history` | `fact_check` | claim-level verdicts |
-| `unsupported_claims` | `fact_check` | drives the routing decision |
-| `fact_check_feedback`, `feedback_history` | `fact_check` | instructions for the rewrite |
-| `iteration`, `max_iterations` | `summarize` / config | loop counter and safeguard |
-| `is_verified` | `fact_check` | true once every claim is supported |
-| `trace`, `node_log` | all nodes | the execution trace shown in the UI |
+| Short-term (thread) memory | `SqliteSaver` checkpointer → `memory_data/checkpoints.sqlite`, keyed by `thread_id` | Full graph state after every step, so a paused run can resume. The `messages` channel (an `add_messages` reducer) grows across runs on the same thread, and the summarizer reads earlier reviewer notes from it. |
+| Long-term memory | `SqliteStore` → `memory_data/store.sqlite`, with semantic search via `nomic-embed-text` | `("lessons",)`: mistakes caught by the fact checker, the guard or the reviewer. `("summaries", corpus_id)`: approved summaries. |
+| RAG | Chroma (`memory_data/chroma/`) + `OllamaEmbeddings("nomic-embed-text")` | The papers, split into ~120-word chunks. One collection per set of papers, reused if the same files are uploaded again. |
+
+The sidebar has the hop limit, the approval toggle, the current thread (plus
+**Start a new thread**), and a button to clear long-term memory. The
+**Memory & RAG** tab shows the thread's messages, the stored lessons, and every
+retrieval each agent made.
 
 ---
 
@@ -104,6 +87,7 @@ ollama serve
 
 # 3. pull the model (about 1.9 GB, one time only)
 ollama pull qwen2.5:3b
+ollama pull nomic-embed-text   # embeddings for RAG and long-term memory
 
 # 4. run the application
 streamlit run app.py
@@ -141,7 +125,10 @@ multi_step_research_summarizer/
 ├── app.py               Streamlit UI (layout and orchestration only)
 ├── ui.py                design tokens, CSS, and the animated SVG diagram
 ├── graph.py             the LangGraph StateGraph - nodes, edges, conditional edge
-├── nodes.py             read_source, summarize, fact_check, router, finalize
+├── nodes.py             supervisor, summarizer / fact_checker / guard agents,
+│                        human_review (interrupt), finalize
+├── memory.py            SqliteSaver (thread memory) + SqliteStore (long-term)
+├── rag.py               Chroma + nomic-embed-text indexing and retrieval
 ├── state.py             the ResearchState TypedDict
 ├── prompts.py           all LLM prompt templates
 │

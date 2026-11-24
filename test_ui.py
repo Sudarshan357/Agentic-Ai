@@ -76,11 +76,18 @@ def main() -> int:
         print(f"  [{'PASS' if ok else 'FAIL'}] journey stage: {stage}")
         failures += not ok
 
-    if len(app.tabs) < 5:
-        print(f"  [FAIL] expected 5 tabs, found {len(app.tabs)}")
+    if len(app.tabs) < 6:
+        print(f"  [FAIL] expected 6 tabs, found {len(app.tabs)}")
         failures += 1
     else:
-        print("  [PASS] all five tabs present")
+        print("  [PASS] all six tabs present")
+
+    for ok, label in [
+        (any(s.label == "Supervisor hop limit" for s in app.slider), "hop limit slider"),
+        (any("approval" in c.label.lower() for c in app.checkbox), "human approval toggle"),
+    ]:
+        print(f"  [{'PASS' if ok else 'FAIL'}] {label}")
+        failures += not ok
 
     if not app.button:
         print("  [FAIL] the RUN button was not rendered")

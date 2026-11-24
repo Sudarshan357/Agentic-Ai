@@ -10,8 +10,9 @@ import urllib.request
 import streamlit as st
 import streamlit.components.v1 as components
 
+import memory
 import ui
-from graph import run_workflow
+from graph import new_thread_id, resume_workflow, run_workflow, thread_messages
 from nodes import extract_text, is_supported_source
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +33,7 @@ st.session_state.setdefault("result", None)
 st.session_state.setdefault("pending", None)
 st.session_state.setdefault("elapsed", 0.0)
 st.session_state.setdefault("upload_dir", None)
+st.session_state.setdefault("thread_id", new_thread_id())
 
 
 def ollama_models() -> list[str] | None:
@@ -117,74 +119,67 @@ def first_rejection(state: dict) -> tuple[str, str]:
     return "", ""
 
 
-def diagram_state_after(node_name: str, state: dict) -> tuple[dict, bool, bool]:
-    """Translate "node X just finished" into diagram highlighting."""
-    verified = bool(state.get("is_verified"))
-    will_loop = (
-        node_name == "fact_check"
-        and not verified
-        and state.get("iteration", 0) < state.get("max_iterations", 3)
-    )
+AGENT_NODES = ("summarizer", "fact_checker", "guard", "human_review")
 
-    if node_name == "read_source":
-        return {"read_source": "done", "summarize": "active"}, False, False
-    if node_name == "summarize":
-        return (
-            {"read_source": "done", "summarize": "done", "fact_check": "active"},
-            False,
-            False,
-        )
-    if node_name == "fact_check":
-        states = {
-            "read_source": "done",
-            "summarize": "done",
-            "fact_check": "done" if verified else "failed",
-            "decision": "active",
-        }
-        if will_loop:
-            states["summarize"] = "active"
-        return states, will_loop, verified
+
+def diagram_state_after(node_name: str, state: dict) -> tuple[dict, str, str]:
+    """Translate "node X just finished" into diagram highlighting."""
+    node_states: dict[str, str] = {}
+    for entry in state.get("node_log", []):
+        bad = entry["status"] in {"warning", "error"} and entry["node"] != "supervisor"
+        node_states[entry["node"]] = "failed" if bad else "done"
+
+    active_edge = ""
+    final = state.get("final_status")
+    if state.get("awaiting_approval"):
+        node_states["human_review"] = "waiting"
+        active_edge = "human_review"
+    elif not final:
+        if node_name == "read_source":
+            node_states["index_sources"] = "active"
+        elif node_name == "index_sources":
+            node_states["supervisor"] = "active"
+        elif node_name == "supervisor":
+            nxt = state.get("next_agent", "")
+            node_states[nxt] = "active"
+            active_edge = nxt
+        elif node_name in AGENT_NODES:
+            node_states["supervisor"] = "active"
+            active_edge = node_name
+
+    hops = f"hop {state.get('hops', 0)}/{state.get('max_hops', 0)}" if state.get("max_hops") else ""
+    return node_states, active_edge, hops
+
+
+def rerouted_to_summarizer(node_name: str, state: dict) -> bool:
+    """True right after the supervisor sends a rejected draft back."""
     return (
-        {
-            "read_source": "done",
-            "summarize": "done",
-            "fact_check": "done" if verified else "failed",
-            "decision": "done",
-            "end": "done",
-        },
-        False,
-        verified,
+        node_name == "supervisor"
+        and state.get("next_agent") == "summarizer"
+        and state.get("iteration", 0) >= 1
     )
 
 
 def timeline_rows(state: dict) -> str:
-    """Node log rows, with a CONDITIONAL ROUTING row after each loop-back."""
-    rows: list[str] = []
-    log = state.get("node_log", [])
-    max_iterations = state.get("max_iterations", 3)
-
-    for entry in log:
-        rows.append(ui.timeline_row(entry["label"], entry["status"]))
-        if entry["node"] == "fact_check" and entry["status"] == "warning":
-            if entry["iteration"] < max_iterations:
-                rows.append(
-                    ui.timeline_row("CONDITIONAL ROUTING → summarize", "routing")
-                )
+    """One row per node that ran, supervisor hand-offs included."""
+    rows = [ui.timeline_row(e["label"], e["status"]) for e in state.get("node_log", [])]
+    if state.get("awaiting_approval"):
+        rows.append(ui.timeline_row("HUMAN APPROVAL", "waiting"))
     return "".join(rows)
 
 
-def draw_diagram(slot, node_states=None, loop_active=False, verified=False):
+def draw_diagram(slot, node_states=None, active_edge="", hops=""):
     """Rendered through components.html: Streamlit's markdown sanitiser strips <svg>."""
     with slot.container():
         components.html(
-            ui.workflow_diagram(node_states, loop_active, verified),
+            ui.workflow_diagram(node_states, active_edge, hops),
             height=ui.DIAGRAM_HEIGHT + 12,
             scrolling=False,
         )
 
 
-def render_live_panel(diagram_ph, timeline_ph, node_states, loop_active, verified, state):
-    draw_diagram(diagram_ph, node_states, loop_active, verified)
+def render_live_panel(diagram_ph, timeline_ph, node_name, state):
+    draw_diagram(diagram_ph, *diagram_state_after(node_name, state))
     timeline_ph.markdown(timeline_rows(state), unsafe_allow_html=True)
 
 
@@ -194,18 +189,24 @@ def render_metrics(slot, state: dict | None):
             ui.metric("Workflow status", "IDLE", "waiting to run", ui.INK_SUBTLE),
             ui.metric("Iterations", "0", "summaries generated", ui.INK_SUBTLE),
             ui.metric("Claims verified", "—", "no run yet", ui.INK_SUBTLE),
-            ui.metric("Correction loops", "0", "fact_check → summarize", ui.INK_SUBTLE),
+            ui.metric("Supervisor hops", "0", "agent hand-offs", ui.INK_SUBTLE),
         ]
     else:
-        verified = state.get("is_verified", False)
+        final = state.get("final_status", "")
+        if state.get("awaiting_approval"):
+            label, color = "AWAITING APPROVAL", ui.WARNING
+        elif final:
+            label = final
+            color = ui.SUCCESS if final in {"APPROVED", "VERIFIED"} else ui.DANGER
+        else:
+            label, color = "RUNNING", ui.PRIMARY_HOVER
         claims = state.get("claims", [])
         supported = sum(1 for c in claims if c["status"] == "SUPPORTED")
-        loops = max(0, state.get("iteration", 1) - 1)
-        color = ui.SUCCESS if verified else ui.DANGER
+        hops, max_hops = state.get("hops", 0), state.get("max_hops", 0)
         tiles = [
             ui.metric(
                 "Workflow status",
-                "VERIFIED" if verified else "UNVERIFIED",
+                label,
                 f"{st.session_state.elapsed:.1f}s runtime" if st.session_state.elapsed else "",
                 color,
             ),
@@ -218,14 +219,14 @@ def render_metrics(slot, state: dict | None):
             ui.metric(
                 "Claims verified",
                 f"{supported}/{len(claims)}",
-                "final fact-check pass",
+                "latest fact-check pass",
                 ui.SUCCESS if supported == len(claims) and claims else ui.WARNING,
             ),
             ui.metric(
-                "Correction loops",
-                str(loops),
-                "fact_check → summarize",
-                ui.PRIMARY_HOVER if loops else ui.INK_SUBTLE,
+                "Supervisor hops",
+                f"{hops}/{max_hops}",
+                "hop limit stops the run" if state.get("hop_limit_hit") else "agent hand-offs",
+                ui.DANGER if state.get("hop_limit_hit") else ui.PRIMARY_HOVER,
             ),
         ]
     with slot.container():
@@ -289,19 +290,69 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
+    st.markdown("### Supervisor hop limit")
+    max_hops = st.slider("Supervisor hop limit", 4, 20, 12, label_visibility="collapsed")
+    st.markdown(
+        '<div class="side-note">Each time the supervisor hands work to an agent '
+        "counts as one hop. At the limit it stops the run instead of looping.</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### Human approval")
+    require_approval = st.checkbox("Pause for my approval before finishing", value=True)
+    st.markdown(
+        '<div class="side-note">The graph pauses with <code>interrupt()</code> after the '
+        "guard agent passes. Approve, or send notes back to the summarizer.</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### Memory")
+    embed_ok = installed is not None and any(
+        m.startswith(memory.EMBED_MODEL) for m in installed
+    )
+    st.markdown(
+        f'<div class="side-file"{"" if embed_ok else f" style=border-color:{ui.DANGER}44"}>'
+        f'<span class="dot"{"" if embed_ok else f" style=background:{ui.DANGER}"}></span>'
+        f"{memory.EMBED_MODEL} {'ready' if embed_ok else 'missing'}</div>"
+        + (
+            ""
+            if embed_ok
+            else '<div class="side-note">Run <code>ollama pull nomic-embed-text</code>.</div>'
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="side-note">Thread (short-term memory):<br>'
+        f'<code>{st.session_state.thread_id}</code></div>',
+        unsafe_allow_html=True,
+    )
+    if st.button("Start a new thread", width="stretch"):
+        st.session_state.thread_id = new_thread_id()
+        st.session_state.result = None
+        st.rerun()
+    lesson_count = len(memory.all_lessons(memory.get_store(), limit=500)) if embed_ok else 0
+    st.markdown(
+        f'<div class="side-note">Long-term memory: {lesson_count} lesson(s) in '
+        "<code>memory_data/store.sqlite</code></div>",
+        unsafe_allow_html=True,
+    )
+    if lesson_count and st.button("Clear long-term memory", width="stretch"):
+        memory.clear_long_term(memory.get_store())
+        st.rerun()
+
 
 st.markdown(
     """
 <div class="hero">
-  <div class="hero-eyebrow"><span class="hero-dot"></span>LangGraph · Ollama · qwen2.5:3b</div>
+  <div class="hero-eyebrow"><span class="hero-dot"></span>LangGraph supervisor · Ollama · Chroma RAG · SQLite memory</div>
   <h1>Multi-Step Research Summarizer</h1>
-  <p>Autonomous LangGraph workflow with self-correction</p>
+  <p>A supervisor routes the work between a summarizer, a fact checker and a guard agent, then asks you to approve</p>
   <div class="pipeline">
     <span class="pipeline-step">Read</span><span class="pipeline-arrow">→</span>
-    <span class="pipeline-step">Summarize</span><span class="pipeline-arrow">→</span>
-    <span class="pipeline-step">Fact Check</span><span class="pipeline-arrow">→</span>
-    <span class="pipeline-step">Correct</span><span class="pipeline-arrow">→</span>
-    <span class="pipeline-step">Verify</span>
+    <span class="pipeline-step">Index (RAG)</span><span class="pipeline-arrow">→</span>
+    <span class="pipeline-step">Supervisor</span><span class="pipeline-arrow">⇄</span>
+    <span class="pipeline-step">Agents</span><span class="pipeline-arrow">→</span>
+    <span class="pipeline-step">Human approval</span>
   </div>
 </div>""",
     unsafe_allow_html=True,
@@ -369,8 +420,8 @@ run_col, note_col = st.columns([1, 2.6], gap="large")
 with run_col:
     run_clicked = st.button(
         "▶  RUN RESEARCH",
-        disabled=not ready or installed is None,
-        use_container_width=True,
+        disabled=not ready or installed is None or not embed_ok,
+        width="stretch",
         key="run_main",
     )
 with note_col:
@@ -383,6 +434,10 @@ with note_col:
 
 if run_clicked:
     st.session_state.pending = {
+        "kind": "start",
+        "thread_id": st.session_state.thread_id,
+        "max_hops": max_hops,
+        "require_approval": require_approval,
         "model": model,
         "max_iterations": max_iterations,
         "demo_mode": demo_mode,
@@ -390,6 +445,7 @@ if run_clicked:
         "selected_sources": selected,
     }
     st.session_state.result = None
+    st.session_state.elapsed = 0.0
     st.rerun()
 
 
@@ -402,8 +458,44 @@ render_journey(journey_slot, st.session_state.result, finished=bool(st.session_s
 metrics_slot = st.empty()
 render_metrics(metrics_slot, st.session_state.result)
 
-tab_workflow, tab_sources, tab_facts, tab_trace, tab_arch = st.tabs(
-    ["  Workflow  ", "  Sources  ", "  Fact Check  ", "  Full Trace  ", "  Architecture  "]
+waiting = st.session_state.result or {}
+if waiting.get("awaiting_approval") and not st.session_state.pending:
+    with st.container(border=True):
+        st.markdown(
+            f'<div class="card-title">{ui.badge("⏸ HUMAN APPROVAL REQUIRED", ui.WARNING)}</div>'
+            '<div class="section-sub">The fact checker and the guard agent passed this '
+            "draft. The graph is paused on thread "
+            f"<code>{waiting.get('thread_id', '')}</code> until you decide.</div>"
+            f'<div class="summary-box" style="border-left:2px solid {ui.WARNING}">'
+            f"{ui._escape(waiting['awaiting_approval'].get('summary', ''))}</div>",
+            unsafe_allow_html=True,
+        )
+        notes = st.text_area(
+            "Notes for the summarizer (used if you request changes)",
+            key=f"review_notes_{waiting.get('thread_id')}_{waiting.get('iteration')}",
+            placeholder="e.g. Mention the sample size and keep the caveat about climate.",
+        )
+        approve_col, reject_col, _ = st.columns([1, 1, 2])
+        approve = approve_col.button("✓  Approve", width="stretch", key="approve")
+        reject = reject_col.button("✕  Request changes", width="stretch", key="reject")
+        if approve or reject:
+            st.session_state.pending = {
+                "kind": "resume",
+                "thread_id": waiting["thread_id"],
+                "approved": bool(approve),
+                "feedback": notes,
+            }
+            st.rerun()
+
+tab_workflow, tab_sources, tab_facts, tab_memory, tab_trace, tab_arch = st.tabs(
+    [
+        "  Workflow  ",
+        "  Sources  ",
+        "  Fact Check  ",
+        "  Memory & RAG  ",
+        "  Full Trace  ",
+        "  Architecture  ",
+    ]
 )
 
 
@@ -413,8 +505,8 @@ with tab_workflow:
     with left:
         st.markdown('<div class="section-title">Graph execution</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="section-sub">The active node pulses. When the fact checker '
-            "rejects a summary, the conditional edge back to <b>summarize</b> lights up."
+            '<div class="section-sub">The active agent pulses. Every agent reports back '
+            "to the <b>supervisor</b>, which lights up the edge to whoever goes next."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -435,60 +527,71 @@ with tab_workflow:
 
     if st.session_state.pending:
         config = st.session_state.pending
-        draw_diagram(diagram_slot)
-        progress_bar = progress_slot.progress(0.0, text="Starting graph…")
+        previous = st.session_state.result or {}
+        draw_diagram(diagram_slot, *diagram_state_after("", previous) if previous else ())
+        progress_bar = progress_slot.progress(
+            0.0, text="Resuming the paused thread…" if config["kind"] == "resume" else "Starting graph…"
+        )
         routing_slot = routing_container.empty()
-        expected_nodes = 2 + 2 * config["max_iterations"]
         started = time.time()
 
         def on_event(node_name: str, state: dict) -> None:
-            node_states, loop_active, verified = diagram_state_after(node_name, state)
-            render_live_panel(
-                diagram_slot, timeline_slot, node_states, loop_active, verified, state
-            )
-            done = len(state.get("node_log", []))
+            render_live_panel(diagram_slot, timeline_slot, node_name, state)
             label = {
                 "read_source": "Sources loaded into graph state",
-                "summarize": f"Summary generated (iteration {state.get('iteration', 1)})",
-                "fact_check": "Claims verified against sources"
-                if verified
-                else "Unsupported claim detected — routing back to summarize",
+                "index_sources": "Papers embedded into Chroma",
+                "supervisor": f"Supervisor → {state.get('next_agent', '')}",
+                "summarizer": f"Summarizer wrote draft {state.get('iteration', 1)}",
+                "fact_checker": "Claims verified"
+                if state.get("is_verified")
+                else "Fact checker rejected claims",
+                "guard": "Guard passed" if state.get("guard_passed") else "Guard blocked the draft",
+                "human_review": "Reviewer decision recorded",
                 "finalize": "Workflow finished",
             }.get(node_name, node_name)
+            done = len(state.get("node_log", []))
             progress_bar.progress(
-                1.0 if node_name == "finalize" else min(0.95, done / expected_nodes),
-                text=label,
+                1.0 if node_name == "finalize" else min(0.95, done / 18), text=label
             )
             render_metrics(metrics_slot, state)
             render_journey(journey_slot, state)
-            if loop_active:
+            if rerouted_to_summarizer(node_name, state):
                 routing_slot.markdown(
                     ui.routing_banner(
-                        state.get("iteration", 1),
-                        first_rejected_claim(state),
-                        live=True,
+                        state.get("iteration", 1), first_rejected_claim(state), live=True
                     ),
                     unsafe_allow_html=True,
                 )
-                time.sleep(1.8)
+                time.sleep(1.2)
 
         try:
-            result = run_workflow(
-                sources_dir=config["sources_dir"],
-                model=config["model"],
-                max_iterations=config["max_iterations"],
-                demo_mode=config["demo_mode"],
-                selected_sources=config.get("selected_sources"),
-                on_event=on_event,
-            )
-            st.session_state.elapsed = time.time() - started
+            if config["kind"] == "resume":
+                result = resume_workflow(
+                    config["thread_id"],
+                    approved=config["approved"],
+                    feedback=config.get("feedback", ""),
+                    on_event=on_event,
+                )
+            else:
+                result = run_workflow(
+                    sources_dir=config["sources_dir"],
+                    model=config["model"],
+                    max_iterations=config["max_iterations"],
+                    demo_mode=config["demo_mode"],
+                    selected_sources=config.get("selected_sources"),
+                    max_hops=config["max_hops"],
+                    require_approval=config["require_approval"],
+                    thread_id=config["thread_id"],
+                    on_event=on_event,
+                )
+            st.session_state.elapsed += time.time() - started
             st.session_state.result = result
         except Exception as error:  # noqa: BLE001 - surfaced to the user
             st.session_state.result = None
             st.error(
                 f"Workflow failed: {error}\n\n"
-                "Check that Ollama is running (`ollama serve`) and that the model "
-                "has been pulled (`ollama pull qwen2.5:3b`)."
+                "Check that Ollama is running (`ollama serve`) and that both models "
+                "are pulled (`ollama pull qwen2.5:3b` and `ollama pull nomic-embed-text`)."
             )
         finally:
             st.session_state.pending = None
@@ -498,11 +601,13 @@ with tab_workflow:
 
     result = st.session_state.result
     if result:
-        node_states, _, verified = diagram_state_after("finalize", result)
-        draw_diagram(diagram_slot, node_states, False, verified)
+        draw_diagram(diagram_slot, *diagram_state_after("finalize", result))
+        verified = bool(result.get("is_verified"))
         progress_slot.progress(
             1.0,
-            text="Summary verified" if verified else "Stopped at the iteration safeguard",
+            text="Paused - waiting for your approval above"
+            if result.get("awaiting_approval")
+            else f"Finished: {result.get('final_status', '')}",
         )
         timeline_slot.markdown(timeline_rows(result), unsafe_allow_html=True)
 
@@ -517,15 +622,16 @@ with tab_workflow:
 
         rejected_text, rejected_reason = first_rejection(result)
         with verdict_slot:
-            st.markdown(
-                ui.final_result_panel(
-                    result,
-                    source_count=len(result.get("sources", [])),
-                    rejected_claim=rejected_text,
-                    rejected_reason=rejected_reason,
-                ),
-                unsafe_allow_html=True,
-            )
+            if result.get("final_status"):
+                st.markdown(
+                    ui.final_result_panel(
+                        result,
+                        source_count=len(result.get("sources", [])),
+                        rejected_claim=rejected_text,
+                        rejected_reason=rejected_reason,
+                    ),
+                    unsafe_allow_html=True,
+                )
 
         with comparison_slot:
             st.markdown(
@@ -630,8 +736,8 @@ with tab_sources:
 with tab_facts:
     st.markdown(
         '<div class="section-title">Claim-level verification</div>'
-        '<div class="section-sub">The <b>fact_check</b> node splits the summary into '
-        "sentences and judges each one against the sources.</div>",
+        '<div class="section-sub">The <b>fact checker</b> agent splits the summary into '
+        "sentences and judges each one against the passages Chroma retrieves for it.</div>",
         unsafe_allow_html=True,
     )
 
@@ -655,9 +761,9 @@ with tab_facts:
 
                 verdict_color = ui.SUCCESS if not bad else ui.DANGER
                 verdict_text = (
-                    "FINAL DECISION: SUMMARY VERIFIED → route to END"
+                    "VERDICT: SUMMARY VERIFIED → supervisor sends it to the guard"
                     if not bad
-                    else "FINAL DECISION: UNSUPPORTED CLAIM DETECTED → route back to SUMMARIZE"
+                    else "VERDICT: UNSUPPORTED CLAIMS → supervisor sends it back to the summarizer"
                 )
                 st.markdown(
                     f'<div class="card" style="border-left:2px solid {verdict_color}">'
@@ -665,6 +771,125 @@ with tab_facts:
                     "</div>",
                     unsafe_allow_html=True,
                 )
+
+
+
+with tab_memory:
+    result = st.session_state.result or {}
+    mem_left, mem_right = st.columns([1, 1], gap="large")
+
+    with mem_left:
+        thread_id = result.get("thread_id") or st.session_state.thread_id
+        st.markdown(
+            '<div class="section-title">Short-term memory · thread</div>'
+            '<div class="section-sub">Saved by the SQLite checkpointer on thread '
+            f"<code>{thread_id}</code>. Messages pile up across runs on the same "
+            "thread, and the summarizer reads reviewer notes from earlier runs.</div>",
+            unsafe_allow_html=True,
+        )
+        try:
+            history = thread_messages(thread_id)
+        except Exception:  # noqa: BLE001
+            history = []
+        if not history:
+            st.markdown(
+                '<div class="card"><div class="card-body">Nothing on this thread yet.'
+                "</div></div>",
+                unsafe_allow_html=True,
+            )
+        runs = sum(1 for m in history if getattr(m, "name", "") == "user")
+        if history:
+            st.caption(f"{len(history)} messages · {runs} run(s) on this thread")
+        for message in history[-30:]:
+            who = getattr(message, "name", "") or message.type
+            color = {
+                "user": ui.INK_SUBTLE,
+                "human_reviewer": ui.WARNING,
+                "summarizer": ui.PRIMARY_HOVER,
+                "fact_checker": ui.SUCCESS,
+                "guard": ui.DANGER,
+            }.get(who, ui.INK_SUBTLE)
+            text = str(message.content)
+            st.markdown(
+                f'<div class="trace-block" style="border-left-color:{color}">'
+                f'<div class="trace-head"><span style="color:{color}">{ui._escape(who)}</span></div>'
+                f'<pre class="trace-body">{ui.pre_text(text[:700] + ("…" if len(text) > 700 else ""))}</pre></div>',
+                unsafe_allow_html=True,
+            )
+
+    with mem_right:
+        st.markdown(
+            '<div class="section-title">Long-term memory · SQLite store</div>'
+            '<div class="section-sub">Lessons written by the fact checker, the guard and the '
+            "human reviewer. They outlive threads, and the summarizer looks up the closest "
+            "ones by meaning (nomic-embed-text) before it writes.</div>",
+            unsafe_allow_html=True,
+        )
+        recalled = result.get("recalled_lessons") or []
+        if recalled:
+            st.markdown("**Recalled in this run**")
+            for item in recalled:
+                score = f" · similarity {item['score']}" if item.get("score") is not None else ""
+                st.markdown(
+                    f'<div class="claim" style="border-left-color:{ui.PRIMARY_HOVER}">'
+                    f'<div class="claim-meta">{ui._escape(item["lesson"])}'
+                    f'<br><span style="color:{ui.INK_TERTIARY}">{item.get("kind", "")}{score}</span>'
+                    "</div></div>",
+                    unsafe_allow_html=True,
+                )
+        try:
+            store = memory.get_store()
+            lessons = memory.all_lessons(store, limit=100)
+            saved = memory.previous_summaries(store, result.get("corpus_id", "")) if result.get("corpus_id") else []
+        except Exception:  # noqa: BLE001
+            lessons, saved = [], []
+        with st.expander(f"All stored lessons ({len(lessons)})"):
+            if lessons:
+                st.dataframe(
+                    [
+                        {
+                            "kind": item.get("kind"),
+                            "seen": item.get("times_seen"),
+                            "lesson": item.get("lesson"),
+                            "updated": item.get("updated"),
+                        }
+                        for item in lessons
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.caption("No lessons yet. They appear after the first rejected claim.")
+        with st.expander(f"Approved summaries saved for these papers ({len(saved)})"):
+            for item in saved:
+                st.markdown(f"**{item['saved']}** · {item['status']} · `{item['thread_id']}`")
+                st.write(item["summary"])
+
+    st.markdown(
+        '<div class="section-title" style="margin-top:18px">RAG · Chroma retrievals</div>'
+        '<div class="section-sub">Every search an agent made against the papers, with '
+        "the passages that came back (lower distance = closer match).</div>",
+        unsafe_allow_html=True,
+    )
+    index = result.get("rag_index") or {}
+    if index:
+        st.markdown(
+            f'{ui.badge(index.get("collection", ""), ui.PRIMARY_HOVER)} '
+            f'{ui.badge(str(index.get("chunks", 0)) + " chunks", ui.INK_SUBTLE)} '
+            f'{ui.badge("reused" if index.get("reused") else "newly embedded", ui.SUCCESS)}',
+            unsafe_allow_html=True,
+        )
+    retrievals = result.get("retrievals") or []
+    if not retrievals:
+        st.caption("No retrievals yet - run the workflow.")
+    for item in retrievals:
+        title = f"{item['agent']} · iteration {item['iteration']} · {len(item['hits'])} passages — {item['query'][:90]}"
+        with st.expander(title):
+            for hit in item["hits"]:
+                st.markdown(
+                    f"`{hit['source']}` · passage {hit['chunk'] + 1} · distance {hit['distance']}"
+                )
+                st.caption(hit["text"])
 
 
 with tab_trace:
@@ -702,31 +927,15 @@ with tab_trace:
                 unsafe_allow_html=True,
             )
 
-            if (
-                event["node"] == "fact_check"
-                and event["status"] == "warning"
-                and position + 1 < len(events)
-                and events[position + 1]["node"] == "summarize"
-            ):
-                st.markdown(
-                    f'<div class="trace-connector">↓</div>'
-                    f'<div class="trace-block" style="border-left-color:{ui.PRIMARY_HOVER};'
-                    f'background:{ui.SURFACE_2}">'
-                    f'<div class="trace-head"><span class="trace-step">↻</span>'
-                    f'<span style="color:{ui.PRIMARY_HOVER}">CONDITIONAL ROUTING ACTIVATED</span></div>'
-                    '<pre class="trace-body">Unsupported claims detected.<br>'
-                    "route_after_fact_check() returned &quot;summarize&quot;.<br><br>"
-                    "Routing workflow back to: SUMMARIZE NODE</pre></div>",
-                    unsafe_allow_html=True,
-                )
-            elif position + 1 < len(events):
+            if position + 1 < len(events):
                 st.markdown('<div class="trace-connector">↓</div>', unsafe_allow_html=True)
 
         with st.expander("Raw final state (JSON)"):
             printable = {
                 key: value
                 for key, value in result.items()
-                if key not in {"source_content", "source_documents", "trace"}
+                if key
+                not in {"source_content", "source_documents", "trace", "messages", "retrievals"}
             }
             st.json(printable)
 
@@ -734,8 +943,8 @@ with tab_trace:
 with tab_arch:
     st.markdown(
         '<div class="section-title">How the graph is built</div>'
-        '<div class="section-sub">Four nodes, three fixed edges, and one conditional '
-        "edge that can send execution backwards.</div>",
+        '<div class="section-sub">A supervisor graph: three agents, a human-approval '
+        "step, a hop limit, two kinds of memory and a RAG index.</div>",
         unsafe_allow_html=True,
     )
 
@@ -747,48 +956,50 @@ with tab_arch:
     with arch_right:
         explanations = [
             (
-                "read_source",
-                "Node 1 · Read Source",
-                "Processes the uploaded research sources — PDF or TXT — and writes "
-                "their combined text into the graph state. No LLM is used here; it is "
-                "the ground truth the fact checker later compares against.",
+                "supervisor",
+                "Supervisor (with a hop limit)",
+                "Reads the state after every step and picks the next agent: no draft → "
+                "summarizer; unchecked draft → fact checker; rejected → summarizer; "
+                "verified → guard; guarded → human approval; approved → finalize. Each "
+                "hand-off is a hop. At max_hops it routes to finalize and the run ends "
+                "with HOP LIMIT REACHED.",
             ),
             (
-                "summarize",
-                "Node 2 · Summarize",
-                "Calls qwen2.5:3b through Ollama to write a 4–6 sentence summary. On "
-                "iteration 1 it summarizes from scratch; from iteration 2 the "
-                "fact-check feedback is already in the state, so it rewrites instead.",
+                "summarizer",
+                "Agent 1 · Summarizer",
+                "Writes the summary with qwen2.5:3b from passages retrieved from Chroma. "
+                "Before writing it recalls related lessons from long-term memory and "
+                "reviewer notes from this thread. On a rewrite it also retrieves evidence "
+                "for each rejected claim.",
             ),
             (
-                "fact_check",
-                "Node 3 · Fact Check",
-                "Splits the summary into sentence-level claims and asks the model to "
-                "judge each one against the sources as SUPPORTED, PARTIAL or "
-                "UNSUPPORTED, with a reason and the evidence sentence it used.",
+                "fact_checker",
+                "Agent 2 · Fact checker",
+                "Splits the draft into claims, retrieves the top-4 passages for each "
+                "claim, and asks the model for a SUPPORTED / PARTIAL / UNSUPPORTED "
+                "verdict. Every rejected claim is saved as a lesson.",
             ),
             (
-                "router",
-                "Conditional Router",
-                "route_after_fact_check() reads the state. Unsupported claims left and "
-                "iterations remaining → return \"summarize\" and the graph loops back. "
-                "Otherwise → return \"finish\" and the graph moves to finalize, then END.",
+                "guard",
+                "Agent 3 · Guard",
+                "Rule-based checks the LLM cannot argue with: absolute wording, numbers "
+                "missing from the papers, chat preambles or file names, and length. "
+                "If anything fails, the draft goes back to the summarizer.",
             ),
             (
-                "loop",
-                "The Feedback Loop",
-                "The fact checker's verdicts are turned into written feedback stored in "
-                "state[\"fact_check_feedback\"]. Because state travels along every edge, "
-                "the summarize node receives that feedback when the loop closes — this "
-                "is what makes the system self-correcting rather than merely repetitive.",
+                "human_review",
+                "Human approval",
+                "interrupt() pauses the graph and saves it to the SQLite checkpointer. "
+                "Approve to finish, or send notes back. The run resumes on the same "
+                "thread with Command(resume=...).",
             ),
             (
-                "safeguard",
-                "Iteration Safeguard",
-                "max_iterations (default 3) caps the number of summaries. If the "
-                "summary still fails after the last attempt, the router sends the graph "
-                "to finalize with a VERIFICATION FAILED verdict instead of looping "
-                "forever.",
+                "memory",
+                "Memory and RAG",
+                "Short-term: SqliteSaver checkpoints keyed by thread_id, plus a messages "
+                "channel that grows across runs. Long-term: SqliteStore with "
+                "nomic-embed-text semantic search over lessons and approved summaries. "
+                "RAG: papers chunked and embedded into a Chroma collection.",
             ),
         ]
         for key, title, text in explanations:
@@ -803,47 +1014,36 @@ with tab_arch:
 
     st.markdown(
         '<div class="section-title">The graph definition</div>'
-        '<div class="section-sub">Taken verbatim from <code>graph.py</code>.</div>',
+        '<div class="section-sub">From <code>graph.py</code>.</div>',
         unsafe_allow_html=True,
     )
     st.code(
         '''graph = StateGraph(ResearchState)
 
-# 1. NODES
-graph.add_node("read_source", read_source)
-graph.add_node("summarize",   summarize)
-graph.add_node("fact_check",  fact_check)
-graph.add_node("finalize",    finalize)
+graph.add_node("read_source",   read_source)
+graph.add_node("index_sources", index_sources)        # Chroma + nomic-embed-text
+graph.add_node("supervisor",    supervisor)           # routing + hop limit
+graph.add_node("summarizer",    summarizer_agent)
+graph.add_node("fact_checker",  fact_checker_agent)
+graph.add_node("guard",         guard_agent)
+graph.add_node("human_review",  human_review)         # interrupt()
+graph.add_node("finalize",      finalize)
 
-# 2. FIXED EDGES
-graph.add_edge(START,         "read_source")
-graph.add_edge("read_source", "summarize")
-graph.add_edge("summarize",   "fact_check")
+graph.add_edge(START, "read_source")
+graph.add_edge("read_source", "index_sources")
+graph.add_edge("index_sources", "supervisor")
 
-# 3. CONDITIONAL EDGE — the self-correction loop
-graph.add_conditional_edges(
-    "fact_check",
-    route_after_fact_check,          # inspects state, returns a key
-    {
-        "summarize": "summarize",    # unsupported claims -> loop back
-        "finish":    "finalize",     # verified / safeguard -> stop
-    },
-)
-
+graph.add_conditional_edges("supervisor", route_from_supervisor, {
+    "summarizer": "summarizer", "fact_checker": "fact_checker",
+    "guard": "guard", "human_review": "human_review", "finalize": "finalize",
+})
+for agent in ("summarizer", "fact_checker", "guard", "human_review"):
+    graph.add_edge(agent, "supervisor")      # every agent reports back
 graph.add_edge("finalize", END)
 
-app = graph.compile()''',
+app = graph.compile(
+    checkpointer=SqliteSaver(...),   # short-term / thread memory
+    store=SqliteStore(...),          # long-term memory
+)''',
         language="python",
-    )
-
-    st.markdown(
-        f'<div class="card"><div class="card-title">'
-        f'<span style="color:{ui.PRIMARY}">◆</span>Why this is a graph, not a script</div>'
-        '<div class="card-body">A sequential script runs each function once, in a fixed '
-        "order decided when the code was written. Here the <i>state</i> decides the "
-        "order at runtime: the same <code>summarize</code> node is entered from two "
-        "different edges — once from <code>read_source</code>, and again from the "
-        "conditional edge after a failed fact check. That cycle is what makes the "
-        "workflow autonomous and self-correcting.</div></div>",
-        unsafe_allow_html=True,
     )

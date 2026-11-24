@@ -1,0 +1,33 @@
+TITLE: Compressed Schedules, Fatigue and Workload Intensity
+SOURCE TYPE: Synthetic test paper (fictional data, for testing only)
+TOPIC: Effects of a four-day work week on productivity and wellbeing
+
+1. TWO DIFFERENT MODELS
+
+Not every four-day week is the same. In a reduced-hours model, staff work about
+32 hours over four days. In a compressed model, staff work the same 40 hours in
+four days of 10 hours each. This review compared 12 studies, 7 of the
+reduced-hours model and 5 of the compressed model.
+
+2. FATIGUE IN COMPRESSED SCHEDULES
+
+Studies of the compressed model found that 10-hour days increased end-of-day
+fatigue. In two studies of manufacturing workers, error rates rose in the last
+two hours of a 10-hour shift. Some employees liked having a third day off, but
+others found the longer days hard to manage alongside childcare.
+
+3. WORKLOAD INTENSITY IN REDUCED-HOURS SCHEDULES
+
+In the reduced-hours studies, wellbeing usually improved. However, 4 of the 7
+studies reported that work became more intense: employees had fewer breaks and
+felt more pressure to finish tasks within four days. In one study, 30 percent of
+employees said they regularly worked on their day off to keep up.
+
+4. CONCLUSIONS
+
+The review concludes that the benefits of a four-day week depend strongly on
+which model is used and on whether the workload is actually reduced. Reduced
+hours with a reorganised workload gave the most consistent wellbeing gains.
+Compressed schedules showed mixed results and some safety concerns in physical
+jobs. The authors warn that most studies were short and relied on
+self-reported data, and they call for longer trials with objective measures.

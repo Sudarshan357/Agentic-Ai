@@ -7,3 +7,6 @@ env/
 .streamlit/secrets.toml
 *.log
 .DS_Store
+
+# local memory: checkpoints, long-term store, Chroma index
+memory_data/

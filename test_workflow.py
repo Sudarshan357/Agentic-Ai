@@ -10,8 +10,14 @@ try:
 except (AttributeError, OSError):  # pragma: no cover - non-Windows terminals
     pass
 
+import tempfile
+
+# Keep test runs out of the real memory folder.
+os.environ.setdefault("RESEARCH_MEMORY_DIR", tempfile.mkdtemp(prefix="research_mem_test_"))
+
+import memory
 import nodes
-from graph import run_workflow
+from graph import resume_workflow, run_workflow, thread_messages
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -71,20 +77,70 @@ def test_source_selection() -> int:
     return failed
 
 
+def test_supervisor_policy() -> int:
+    """Routing decisions and the hop limit, without any model."""
+    base = {"max_hops": 5, "hops": 0, "iteration": 0, "max_iterations": 3,
+            "require_approval": True}
+    cases = [
+        ("no summary -> summarizer", {}, "summarizer"),
+        ("new draft -> fact_checker", {"summary": "x", "iteration": 1}, "fact_checker"),
+        ("rejected -> summarizer",
+         {"summary": "x", "iteration": 1, "summary_checked": True}, "summarizer"),
+        ("rejected, no retries -> finalize",
+         {"summary": "x", "iteration": 3, "summary_checked": True}, "finalize"),
+        ("verified -> guard",
+         {"summary": "x", "iteration": 1, "summary_checked": True, "is_verified": True}, "guard"),
+        ("guarded -> human_review",
+         {"summary": "x", "iteration": 1, "summary_checked": True, "is_verified": True,
+          "guard_checked": True, "guard_passed": True}, "human_review"),
+        ("approved -> finalize",
+         {"summary": "x", "iteration": 1, "summary_checked": True, "is_verified": True,
+          "guard_checked": True, "guard_passed": True, "human_decision": "approved"}, "finalize"),
+        ("hop limit -> finalize", {"hops": 5}, "finalize"),
+    ]
+    failed = 0
+    for label, extra, expected in cases:
+        update = nodes.supervisor({**base, **extra})
+        ok = update["next_agent"] == expected
+        if label.startswith("hop limit"):
+            ok = ok and update["hop_limit_hit"] is True
+        failed += not ok
+        print(f"  [{'PASS' if ok else 'FAIL'}]  {label:<34} got {update['next_agent']}")
+    return failed
+
+
 def test_full_workflow() -> int:
-    """Run the graph for real and check the demonstration story holds."""
+    """Run the graph for real: pause for approval, reject once, then approve."""
     started = time.time()
+    seen: list[str] = []
 
     def on_event(node_name: str, state: dict) -> None:
-        print(f"  -> node finished: {node_name:<12} (iteration {state.get('iteration', 0)})")
+        seen.append(node_name)
+        extra = f"-> {state.get('next_agent')}" if node_name == "supervisor" else ""
+        print(f"  . {node_name:<13} hop {state.get('hops', 0):<3} {extra}")
 
     result = run_workflow(
         sources_dir=os.path.join(HERE, "sources"),
         model="qwen2.5:3b",
         max_iterations=3,
         demo_mode=True,
+        max_hops=14,
+        require_approval=True,
         on_event=on_event,
     )
+    thread_id = result["thread_id"]
+    paused = bool(result.get("awaiting_approval"))
+    first_pause_iteration = result.get("iteration", 0)
+    print(f"\n  paused for approval: {paused} (iteration {first_pause_iteration})")
+
+    result = resume_workflow(
+        thread_id, approved=False,
+        feedback="Mention that the benefit depends on the electricity mix.",
+        on_event=on_event,
+    )
+    rewrote_after_rejection = result.get("iteration", 0) > first_pause_iteration
+    if result.get("awaiting_approval"):
+        result = resume_workflow(thread_id, approved=True, on_event=on_event)
     elapsed = time.time() - started
 
     print("\n" + BAR)
@@ -94,9 +150,6 @@ def test_full_workflow() -> int:
         print(f"\n[{event['step']}] {event['title']}   ({event['status']})")
         print("-" * 72)
         print(event["body"])
-        print()
-        print(" " * 34 + "|")
-        print(" " * 34 + "v")
 
     print("\n" + BAR)
     print("ASSERTIONS")
@@ -104,41 +157,28 @@ def test_full_workflow() -> int:
 
     history = result.get("summary_history", [])
     claims_history = result.get("claims_history", [])
+    messages = thread_messages(thread_id)
+    lessons = memory.all_lessons(memory.get_store())
+    agents = {"summarizer", "fact_checker", "guard"}
     checks: list[tuple[str, bool]] = [
-        ("1. sources were read", len(result.get("sources", [])) == 3),
-        ("2. a summary was generated", bool(history)),
-        (
-            "3. iteration 1 contains an unsupported over-claim",
-            bool(claims_history)
-            and any(c["status"] == "UNSUPPORTED" for c in claims_history[0]),
-        ),
-        (
-            "4. the fact checker produced claim-level verdicts",
-            bool(claims_history) and len(claims_history[0]) >= 3,
-        ),
-        ("5. conditional routing looped back", len(history) >= 2),
-        (
-            "6. the summarizer received feedback",
-            bool(result.get("feedback_history"))
-            and "not supported" in result["feedback_history"][0].lower(),
-        ),
-        (
-            "7. the corrected summary makes no unnegated over-claim",
-            len(history) >= 2
-            and not any(
-                guard_flags(sentence)
-                for sentence in nodes.split_into_claims(history[-1])
-            ),
-        ),
-        ("8. the final fact check passed", result.get("is_verified") is True),
-        (
-            "9. the graph stayed within max_iterations",
-            result.get("iteration", 99) <= result.get("max_iterations", 3),
-        ),
-        (
-            "10. the trace is complete",
-            len(result.get("trace", [])) >= 5 and result["trace"][-1]["title"] == "END",
-        ),
+        ("1. sources were read and indexed into Chroma",
+         len(result.get("sources", [])) == 3 and result.get("rag_index", {}).get("chunks", 0) > 0),
+        ("2. all three agents ran", agents <= set(seen)),
+        ("3. the supervisor routed between them", seen.count("supervisor") >= 5),
+        ("4. iteration 1 contained an unsupported over-claim",
+         bool(claims_history) and any(c["status"] == "UNSUPPORTED" for c in claims_history[0])),
+        ("5. the fact checker used RAG per claim",
+         any(r["agent"] == "fact_checker" and r["hits"] for r in result.get("retrievals", []))),
+        ("6. the graph paused for human approval", paused),
+        ("7. a rejection sent work back to the summarizer", rewrote_after_rejection),
+        ("8. the corrected summary makes no unnegated over-claim",
+         not any(guard_flags(s) for s in nodes.split_into_claims(history[-1] if history else ""))),
+        ("9. the run finished APPROVED", result.get("final_status") == "APPROVED"),
+        ("10. hops stayed within the hop limit", result.get("hops", 99) <= result.get("max_hops", 0)),
+        ("11. thread memory kept the reviewer note",
+         any(getattr(m, "name", "") == "human_reviewer" for m in messages)),
+        ("12. long-term memory stored lessons", len(lessons) >= 1),
+        ("13. the trace ends at END", result["trace"][-1]["title"] == "END"),
     ]
 
     failed = 0
@@ -147,17 +187,13 @@ def test_full_workflow() -> int:
         failed += not passed
 
     print("\n" + BAR)
-    print(f"iterations : {result.get('iteration')}")
-    print(f"verified   : {result.get('is_verified')}")
-    print(f"runtime    : {elapsed:.1f}s")
+    print(f"final status : {result.get('final_status')}")
+    print(f"iterations   : {result.get('iteration')}")
+    print(f"hops         : {result.get('hops')}/{result.get('max_hops')}")
+    print(f"runtime      : {elapsed:.1f}s")
     print(BAR)
-
-    print("\nITERATION 1 SUMMARY (rejected):\n")
-    print(history[0] if history else "(none)")
-    if len(history) > 1:
-        print("\nFINAL SUMMARY (verified):\n")
-        print(history[-1])
-
+    print("\nFINAL SUMMARY:\n")
+    print(history[-1] if history else "(none)")
     return failed
 
 
@@ -172,7 +208,10 @@ def main() -> int:
     print("\nPART 2: source selection (no model needed)")
     failed += test_source_selection()
 
-    print("\nPART 3: full graph run against Ollama")
+    print("\nPART 3: supervisor routing and hop limit (no model needed)")
+    failed += test_supervisor_policy()
+
+    print("\nPART 4: full graph run against Ollama")
     failed += test_full_workflow()
 
     print(f"\n{'ALL CHECKS PASSED' if not failed else f'{failed} CHECK(S) FAILED'}")

@@ -17,10 +17,10 @@ SUMMARIZER_FIRST_PASS = """Read the research sources below and write a concise
 summary of what they say. The sources are the only subject matter: derive the
 topic from them, and do not introduce anything they do not discuss.
 
-=== RESEARCH SOURCES ===
+=== RESEARCH SOURCES (passages retrieved from the papers) ===
 {source_content}
 === END OF SOURCES ===
-
+{memory_block}
 Write the summary now (4-6 sentences, prose only):"""
 
 
@@ -35,10 +35,14 @@ so that every sentence is supported by them.
 {previous_summary}
 === END OF PREVIOUS SUMMARY ===
 
-=== FACT-CHECK FEEDBACK ===
+=== FEEDBACK (from the fact checker, guard agent or human reviewer) ===
 {fact_check_feedback}
 === END OF FEEDBACK ===
 
+=== EVIDENCE RETRIEVED FOR THE REJECTED CLAIMS ===
+{evidence}
+=== END OF EVIDENCE ===
+{memory_block}
 Rewrite the summary. You must:
 - Remove or correct every claim listed as unsupported above.
 - Keep the claims that were confirmed as supported.
@@ -54,7 +58,7 @@ Write the corrected summary now (4-6 sentences, prose only):"""
 
 FACT_CHECK_SYSTEM = """You are a strict fact-checking system.
 
-You are given source documents and one claim taken from a summary of them. You
+You are given passages retrieved from the source documents and one claim taken from a summary of them. You
 decide whether the source documents support that claim.
 
 Verdicts:
@@ -70,7 +74,7 @@ Treat absolute wording as UNSUPPORTED when the sources are qualified. For exampl
 You reply with JSON only. No prose, no markdown fences."""
 
 
-FACT_CHECK_CLAIM = """=== RESEARCH SOURCES ===
+FACT_CHECK_CLAIM = """=== SOURCE PASSAGES MOST RELEVANT TO THE CLAIM ===
 {source_content}
 === END OF SOURCES ===
 
@@ -81,3 +85,9 @@ Reply with exactly this JSON object and nothing else:
 {{"status": "SUPPORTED" | "PARTIAL" | "UNSUPPORTED",
   "reason": "one sentence explaining the verdict",
   "evidence": "the sentence from the sources you relied on, or empty string"}}"""
+
+
+MEMORY_BLOCK = """
+=== MEMORY ===
+{lessons}{thread_notes}=== END OF MEMORY ===
+"""

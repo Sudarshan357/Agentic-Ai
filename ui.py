@@ -260,7 +260,8 @@ def timeline_row(label: str, status: str) -> str:
     palette = {
         "completed": (SUCCESS, "✓", "COMPLETED"),
         "warning": (WARNING, "!", "ISSUE DETECTED"),
-        "routing": (PRIMARY_HOVER, "↻", "LOOPING BACK"),
+        "routing": (PRIMARY_HOVER, "→", "ROUTED"),
+        "waiting": (WARNING, "…", "WAITING FOR YOU"),
         "error": (DANGER, "✕", "FAILED"),
         "running": (PRIMARY_HOVER, "•", "RUNNING"),
     }
@@ -321,186 +322,141 @@ def _escape(text: str) -> str:
     )
 
 
-VIEW_W, VIEW_H = 420, 516
-DIAGRAM_HEIGHT = 600
+VIEW_W, VIEW_H = 420, 470
+DIAGRAM_HEIGHT = 540
 
-_NODE_W, _NODE_H = 216, 54
-_CX = 300
+_FILLS = {
+    "idle": (SURFACE_1, HAIRLINE, INK_SUBTLE),
+    "active": (SURFACE_2, PRIMARY_HOVER, INK),
+    "done": (SURFACE_1, SUCCESS, INK),
+    "failed": (SURFACE_1, DANGER, INK),
+    "waiting": (SURFACE_2, WARNING, INK),
+}
 
 
-def _node(x: int, y: int, label: str, sub: str, state: str) -> str:
-    """One box in the diagram. `state` is idle | active | done | failed."""
-    fills = {
-        "idle": (SURFACE_1, HAIRLINE, INK_SUBTLE),
-        "active": (SURFACE_2, PRIMARY_HOVER, INK),
-        "done": (SURFACE_1, SUCCESS, INK),
-        "failed": (SURFACE_1, DANGER, INK),
-    }
-    fill, stroke, text_color = fills[state]
+def _box(x: float, y: float, w: float, h: float, label: str, sub: str, state: str, rx: int = 10) -> str:
+    """One node box. `state` is idle | active | done | failed | waiting."""
+    fill, stroke, text_color = _FILLS.get(state, _FILLS["idle"])
     pulse = (
-        f'<animate attributeName="stroke-opacity" values="1;.35;1" dur="1.4s" '
-        f'repeatCount="indefinite"/>'
-        if state == "active"
+        '<animate attributeName="stroke-opacity" values="1;.35;1" dur="1.4s" repeatCount="indefinite"/>'
+        if state in {"active", "waiting"}
         else ""
     )
     glow = (
-        f'<rect x="{x - 4}" y="{y - 4}" width="{_NODE_W + 8}" height="{_NODE_H + 8}" rx="14" '
-        f'fill="none" stroke="{PRIMARY}" stroke-opacity=".28" stroke-width="6"/>'
-        if state == "active"
+        f'<rect x="{x - 4}" y="{y - 4}" width="{w + 8}" height="{h + 8}" rx="{rx + 4}" '
+        f'fill="none" stroke="{stroke}" stroke-opacity=".28" stroke-width="6"/>'
+        if state in {"active", "waiting"}
         else ""
     )
     sub_line = (
-        f'<text x="{x + _NODE_W / 2}" y="{y + 38}" text-anchor="middle" '
-        f'font-family="JetBrains Mono, monospace" font-size="10" fill="{INK_TERTIARY}">{sub}</text>'
+        f'<text x="{x + w / 2}" y="{y + h / 2 + 13}" text-anchor="middle" '
+        f'font-family="JetBrains Mono, monospace" font-size="9" fill="{INK_TERTIARY}">{sub}</text>'
         if sub
         else ""
     )
-    dy = 24 if sub else 32
+    dy = h / 2 - 1 if sub else h / 2 + 4
     return f"""
     {glow}
-    <rect x="{x}" y="{y}" width="{_NODE_W}" height="{_NODE_H}" rx="10"
+    <rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{rx}"
           fill="{fill}" stroke="{stroke}" stroke-width="1.5">{pulse}</rect>
-    <text x="{x + _NODE_W / 2}" y="{y + dy}" text-anchor="middle"
-          font-family="Inter, sans-serif" font-size="13" font-weight="600"
+    <text x="{x + w / 2}" y="{y + dy}" text-anchor="middle"
+          font-family="Inter, sans-serif" font-size="11.5" font-weight="600"
           letter-spacing="0.4" fill="{text_color}">{label}</text>
     {sub_line}"""
 
 
-def _arrow(x: int, y1: int, y2: int, color: str, animated: bool = False) -> str:
-    dash = (
-        '<animate attributeName="stroke-dashoffset" values="12;0" dur=".7s" '
-        'repeatCount="indefinite"/>'
-        if animated
+def _spoke(x1, y1, x2, y2, state: str) -> str:
+    """Two-way edge between the supervisor and one agent."""
+    color = {"active": PRIMARY_HOVER, "done": "#3b6b48"}.get(state, HAIRLINE_STRONG)
+    width = 2.6 if state == "active" else 1.5
+    anim = (
+        '<animate attributeName="stroke-dashoffset" values="14;0" dur=".6s" repeatCount="indefinite"/>'
+        if state == "active"
         else ""
     )
-    style = 'stroke-dasharray="5 4"' if animated else ""
+    dash = 'stroke-dasharray="6 5"' if state == "active" else ""
+    mark = color.lstrip("#")
     return (
-        f'<line x1="{x}" y1="{y1}" x2="{x}" y2="{y2 - 8}" stroke="{color}" '
-        f'stroke-width="1.6" {style} marker-end="url(#head-{color.lstrip("#")})">{dash}</line>'
+        f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{color}" stroke-width="{width}" {dash} '
+        f'marker-end="url(#h-{mark})" marker-start="url(#h-{mark})">{anim}</line>'
     )
 
 
 def workflow_diagram(
     node_states: dict[str, str] | None = None,
-    loop_active: bool = False,
-    verified: bool = False,
+    active_edge: str = "",
+    hops: str = "",
 ) -> str:
-    """Build the SVG workflow diagram."""
+    """SVG of the supervisor graph: a hub with agents around it."""
     s = {
-        "read_source": "idle",
-        "summarize": "idle",
-        "fact_check": "idle",
-        "decision": "idle",
-        "end": "idle",
+        "read_source": "idle", "index_sources": "idle", "supervisor": "idle",
+        "summarizer": "idle", "fact_checker": "idle", "guard": "idle",
+        "human_review": "idle", "finalize": "idle",
         **(node_states or {}),
     }
 
-    y_read, y_sum, y_fact, y_dec, y_end = 24, 128, 232, 336, 452
-    line = HAIRLINE_STRONG
-    loop_color = LOOP_LIVE if loop_active else LOOP_IDLE
-    yes_color = SUCCESS if verified else HAIRLINE_STRONG
+    def edge(name: str) -> str:
+        if name == active_edge:
+            return "active"
+        return "done" if s.get(name) in {"done", "failed"} else "idle"
 
-    loop_x = 118
-    loop_path = (
-        f"M {_CX - _NODE_W / 2} {y_dec + _NODE_H / 2} "
-        f"H {loop_x + 14} Q {loop_x} {y_dec + _NODE_H / 2} {loop_x} {y_dec + _NODE_H / 2 - 14} "
-        f"V {y_sum + _NODE_H / 2 + 14} Q {loop_x} {y_sum + _NODE_H / 2} {loop_x + 14} {y_sum + _NODE_H / 2} "
-        f"H {_CX - _NODE_W / 2 - 8}"
-    )
-    loop_anim = (
-        '<animate attributeName="stroke-dashoffset" values="16;0" dur=".55s" '
-        'repeatCount="indefinite"/>'
-        if loop_active
-        else ""
-    )
-    loop_halo = (
-        f'<path d="{loop_path}" fill="none" stroke="{PRIMARY}" stroke-opacity=".30" '
-        f'stroke-width="11" stroke-linecap="round"/>'
-        if loop_active
-        else ""
-    )
-    loop_mid_y = y_sum + _NODE_H / 2 + 45
-    loop_badge = (
-        f'<rect x="{loop_x - 34}" y="{loop_mid_y - 11}" width="68" height="22" rx="11" '
-        f'fill="{CANVAS}" stroke="{LOOP_LIVE}" stroke-width="1.5"/>'
-        f'<text x="{loop_x}" y="{loop_mid_y + 4}" text-anchor="middle" '
-        f'font-family="Inter,sans-serif" font-size="9.5" font-weight="700" '
-        f'letter-spacing="0.6" fill="{LOOP_LIVE}">LOOP BACK</text>'
-        if loop_active
-        else ""
-    )
+    cx = VIEW_W / 2
+    sup_x, sup_y, sup_w, sup_h = 125, 178, 170, 62
+    agent_y, agent_w, agent_h = 318, 124, 56
+    agent_xs = {"summarizer": 6, "fact_checker": 148, "guard": 290}
+    side_y, side_w, side_h = 184, 104, 50
 
+    colors = {PRIMARY_HOVER, "#3b6b48", HAIRLINE_STRONG, SUCCESS}
     markers = "".join(
-        f'<marker id="head-{c.lstrip("#")}" viewBox="0 0 10 10" refX="8" refY="5" '
+        f'<marker id="h-{c.lstrip("#")}" viewBox="0 0 10 10" refX="8" refY="5" '
         f'markerWidth="6" markerHeight="6" orient="auto-start-reverse">'
         f'<path d="M 0 0 L 10 5 L 0 10 z" fill="{c}"/></marker>'
-        for c in {line, loop_color, yes_color, PRIMARY_HOVER, SUCCESS, LOOP_IDLE, LOOP_LIVE}
+        for c in colors
     )
+    down = HAIRLINE_STRONG.lstrip("#")
 
-    x = int(_CX - _NODE_W / 2)
+    spokes = "".join(
+        _spoke(cx + (x + agent_w / 2 - cx) * 0.25, sup_y + sup_h + 6,
+               x + agent_w / 2, agent_y - 6, edge(name))
+        for name, x in agent_xs.items()
+    )
+    spokes += _spoke(sup_x - 6, sup_y + sup_h / 2, 6 + side_w + 6, side_y + side_h / 2, edge("human_review"))
+    spokes += _spoke(sup_x + sup_w + 6, sup_y + sup_h / 2, VIEW_W - 6 - side_w - 6, side_y + side_h / 2, edge("finalize"))
+
+    agents = "".join(
+        _box(x, agent_y, agent_w, agent_h, label, sub, s[name])
+        for name, x, label, sub in [
+            ("summarizer", agent_xs["summarizer"], "SUMMARIZER", "agent · RAG + memory"),
+            ("fact_checker", agent_xs["fact_checker"], "FACT CHECKER", "agent · per-claim RAG"),
+            ("guard", agent_xs["guard"], "GUARD", "agent · safety rules"),
+        ]
+    )
 
     return f"""
 <!doctype html><html><head><meta charset="utf-8">
-<link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
 <style>html,body{{margin:0;padding:0;background:{CANVAS};overflow:hidden;}}</style>
 </head><body>
 <svg viewBox="0 0 {VIEW_W} {VIEW_H}" preserveAspectRatio="xMidYMin meet"
-     style="width:100%;max-width:470px;height:auto;display:block;margin:0 auto;"
+     style="width:100%;max-width:480px;height:auto;display:block;margin:0 auto;"
      xmlns="http://www.w3.org/2000/svg">
   <defs>{markers}</defs>
 
-  {_node(x, y_read, "READ SOURCES", "node 1 · processes uploaded research sources", s["read_source"])}
-  {_arrow(_CX, y_read + _NODE_H, y_sum, line)}
+  {_box(cx - 108, 10, 216, 46, "READ SOURCES", "uploaded PDF / TXT", s["read_source"])}
+  <line x1="{cx}" y1="58" x2="{cx}" y2="84" stroke="{HAIRLINE_STRONG}" stroke-width="1.6" marker-end="url(#h-{down})"/>
+  {_box(cx - 108, 88, 216, 46, "RAG INDEX", "Chroma · nomic-embed-text", s["index_sources"])}
+  <line x1="{cx}" y1="136" x2="{cx}" y2="{sup_y - 4}" stroke="{HAIRLINE_STRONG}" stroke-width="1.6" marker-end="url(#h-{down})"/>
 
-  {_node(x, y_sum, "SUMMARIZE", "node 2 · qwen2.5:3b", s["summarize"])}
-  {_arrow(_CX, y_sum + _NODE_H, y_fact, line)}
+  {spokes}
+  {_box(sup_x, sup_y, sup_w, sup_h, "SUPERVISOR", hops or "routes · hop limit", s["supervisor"], rx=14)}
+  {_box(6, side_y, side_w, side_h, "HUMAN", "approval", s["human_review"])}
+  {_box(VIEW_W - 6 - side_w, side_y, side_w, side_h, "FINALIZE", "save → END", s["finalize"])}
+  {agents}
 
-  {_node(x, y_fact, "FACT CHECK", "node 3 · claim by claim", s["fact_check"])}
-  {_arrow(_CX, y_fact + _NODE_H, y_dec, line)}
-
-  <!-- conditional router, drawn as a diamond-cornered box -->
-  <rect x="{x + 18}" y="{y_dec}" width="{_NODE_W - 36}" height="{_NODE_H}" rx="26"
-        fill="{SURFACE_2 if s['decision'] != 'idle' else SURFACE_1}"
-        stroke="{PRIMARY if s['decision'] != 'idle' else HAIRLINE}" stroke-width="1.5"/>
-  <text x="{_CX}" y="{y_dec + 24}" text-anchor="middle" font-family="Inter,sans-serif"
-        font-size="12.5" font-weight="600" letter-spacing="0.4"
-        fill="{INK if s['decision'] != 'idle' else INK_SUBTLE}">ALL CLAIMS SUPPORTED?</text>
-  <text x="{_CX}" y="{y_dec + 40}" text-anchor="middle" font-family="JetBrains Mono,monospace"
-        font-size="10" fill="{INK_TERTIARY}">conditional edge</text>
-
-  <!-- YES branch -> END -->
-  {_arrow(_CX, y_dec + _NODE_H, y_end, yes_color)}
-  <text x="{_CX + 12}" y="{y_dec + _NODE_H + 26}" font-family="Inter,sans-serif"
-        font-size="11" font-weight="600" fill="{yes_color}">YES</text>
-
-  <!-- NO branch -> back to SUMMARIZE : the conditional edge, the whole point -->
-  {loop_halo}
-  <path d="{loop_path}" fill="none" stroke="{loop_color}" stroke-width="{3.4 if loop_active else 2}"
-        stroke-dasharray="8 6" marker-end="url(#head-{loop_color.lstrip('#')})">{loop_anim}</path>
-  <rect x="{loop_x + 16}" y="{y_dec + _NODE_H / 2 - 24}" width="26" height="17" rx="8"
-        fill="{loop_color}" fill-opacity="{0.9 if loop_active else 0.22}"
-        stroke="{loop_color}" stroke-width="1"/>
-  <text x="{loop_x + 29}" y="{y_dec + _NODE_H / 2 - 12}" text-anchor="middle"
-        font-family="Inter,sans-serif" font-size="10" font-weight="700"
-        fill="{CANVAS if loop_active else loop_color}">NO</text>
-  {loop_badge}
-  <text x="8" y="{(y_sum + y_dec) / 2 + 26}" font-family="Inter,sans-serif"
-        font-size="10.5" font-weight="700" fill="{loop_color}">
-        SELF-CORRECTION</text>
-  <text x="8" y="{(y_sum + y_dec) / 2 + 40}" font-family="Inter,sans-serif"
-        font-size="10.5" font-weight="700" fill="{loop_color}">LOOP</text>
-  <text x="8" y="{(y_sum + y_dec) / 2 + 56}" font-family="JetBrains Mono,monospace"
-        font-size="9" fill="{INK_TERTIARY}">feedback →</text>
-  <text x="8" y="{(y_sum + y_dec) / 2 + 68}" font-family="JetBrains Mono,monospace"
-        font-size="9" fill="{INK_TERTIARY}">summarize</text>
-
-  <!-- END -->
-  <rect x="{x + 58}" y="{y_end}" width="{_NODE_W - 116}" height="44" rx="22"
-        fill="{SURFACE_1}" stroke="{SUCCESS if s['end'] == 'done' else HAIRLINE}" stroke-width="1.5"/>
-  <text x="{_CX}" y="{y_end + 28}" text-anchor="middle" font-family="Inter,sans-serif"
-        font-size="13" font-weight="600" letter-spacing="0.6"
-        fill="{SUCCESS if s['end'] == 'done' else INK_SUBTLE}">END</text>
+  <text x="{cx}" y="{agent_y + agent_h + 30}" text-anchor="middle" font-family="Inter,sans-serif"
+        font-size="10.5" fill="{INK_TERTIARY}">Every agent reports back to the supervisor, which picks the next one.</text>
+  <text x="{cx}" y="{agent_y + agent_h + 48}" text-anchor="middle" font-family="JetBrains Mono,monospace"
+        font-size="9.5" fill="{INK_TERTIARY}">thread memory: SQLite checkpointer · long-term: SQLite store</text>
 </svg>
 </body></html>"""
 
@@ -608,12 +564,12 @@ EXTRA_CSS = f"""
 
 JOURNEY = [
     ("Read Sources", "read"),
-    ("Run Autonomous Research", "run"),
-    ("Summarize", "summarize"),
-    ("Fact Check", "factcheck"),
-    ("Automatic Loop", "loop"),
-    ("Corrected Summary", "corrected"),
-    ("Verified", "verified"),
+    ("RAG Index", "index"),
+    ("Summarizer", "summarize"),
+    ("Fact Checker", "factcheck"),
+    ("Guard", "guard"),
+    ("Human Approval", "approval"),
+    ("Final", "final"),
 ]
 
 _JOURNEY_STYLE = {
@@ -626,41 +582,42 @@ _JOURNEY_STYLE = {
 
 
 def journey_status(state: dict | None, finished: bool = False) -> dict[str, str]:
-    """Work out where the run is along the seven-stage journey."""
+    """Where the run is along the journey, from the nodes it has visited."""
     status = {key: "pending" for _, key in JOURNEY}
     if not state:
         return status
 
-    summaries = state.get("summary_history", []) or []
-    checks = state.get("claims_history", []) or []
-    verified = bool(state.get("is_verified"))
-    looped = len(summaries) >= 2
+    visited = {entry["node"] for entry in state.get("node_log", [])}
+    final = state.get("final_status", "")
+    awaiting = bool(state.get("awaiting_approval"))
 
-    if state.get("sources"):
+    if "read_source" in visited:
         status["read"] = "done"
-        status["run"] = "done"
-    if summaries:
+    if "index_sources" in visited:
+        status["index"] = "done"
+    if "summarizer" in visited:
         status["summarize"] = "done"
-    if checks:
-        status["factcheck"] = "done"
-    if looped:
-        status["loop"] = "done"
-        status["corrected"] = "done"
-    if verified:
-        status["verified"] = "done"
-
-    if finished:
-        if not looped and verified:
-            status["loop"] = "skipped"
-            status["corrected"] = "skipped"
-        if not verified:
-            status["verified"] = "failed"
+    if "fact_checker" in visited:
+        status["factcheck"] = "done" if state.get("is_verified") or not final else "failed"
+    if "guard" in visited:
+        status["guard"] = "done" if state.get("guard_passed") or not final else "failed"
+    if awaiting:
+        status["approval"] = "active"
+    elif state.get("human_decision") == "approved":
+        status["approval"] = "done"
+    elif final and state.get("human_decision") == "rejected":
+        status["approval"] = "failed"
+    if final:
+        status["final"] = "done" if final in {"APPROVED", "VERIFIED"} else "failed"
+        if not state.get("require_approval"):
+            status["approval"] = "skipped"
         return status
 
-    for _, key in JOURNEY:
-        if status[key] == "pending":
-            status[key] = "active"
-            break
+    if not awaiting:
+        for _, key in JOURNEY:
+            if status[key] == "pending":
+                status[key] = "active"
+                break
     return status
 
 
@@ -693,25 +650,24 @@ def journey_stepper(status: dict[str, str]) -> str:
 
 
 def routing_banner(iteration: int, rejected_claim: str = "", live: bool = False) -> str:
-    """The moment the conditional edge sends the run back to summarize."""
+    """The moment the supervisor sends work back to the summarizer."""
     claim = (
         f'<div class="routing-claim">Rejected claim: “{_escape(rejected_claim)}”</div>'
         if rejected_claim
         else ""
     )
-    verb = "is routing" if live else "routed"
+    verb = "is sending" if live else "sent"
     return (
         f'<div class="routing{" live" if live else ""}">'
         f'<div class="routing-head">'
         f'<div class="routing-glyph">↻</div>'
-        f'<div class="routing-title">Conditional edge fired — looping back</div>'
-        f'<div class="routing-edge">fact_check → summarize</div>'
+        f'<div class="routing-title">Supervisor routed the work back</div>'
+        f'<div class="routing-edge">supervisor → summarizer</div>'
         f"</div>"
-        f'<div class="routing-body">The fact checker rejected the summary from '
-        f"iteration {iteration}, so <b>route_after_fact_check()</b> returned "
-        f'<b>"summarize"</b> and LangGraph {verb} execution <b>backwards</b> to '
-        f"node 2 — carrying the written feedback along in the graph state. "
-        f"This edge is the self-correction loop.</div>"
+        f'<div class="routing-body">The draft from iteration {iteration} was rejected, so '
+        f"the <b>supervisor</b> {verb} it back to the <b>summarizer</b> agent with "
+        f"the written feedback in the graph state. Each hand-off counts against the "
+        f"hop limit.</div>"
         f"{claim}</div>"
     )
 
@@ -802,9 +758,10 @@ FINAL_CSS = """
 
 _FLOW = [
     "Uploaded Papers",
-    "Initial Summary",
-    "Fact Check",
+    "Summarizer",
+    "Fact Checker",
     "Correction Loop",
+    "Guard",
 ]
 
 
@@ -815,7 +772,8 @@ def final_result_panel(
     rejected_reason: str = "",
 ) -> str:
     """The headline answer: what the run concluded, and what backs it."""
-    verified = bool(state.get("is_verified"))
+    final = state.get("final_status", "") or ""
+    verified = final in {"APPROVED", "VERIFIED"}
     iterations = int(state.get("iteration", 0) or 0)
     loops = max(0, iterations - 1)
     claims = state.get("claims", []) or []
@@ -823,13 +781,13 @@ def final_result_panel(
     summary = state.get("summary", "") or ""
 
     colour = SUCCESS if verified else WARNING
-    stamp = "✅ VERIFIED" if verified else "⚠ UNVERIFIED"
-    summary_label = "Final verified summary" if verified else "Final summary (unverified)"
+    stamp = ("✅ " if verified else "⚠ ") + (final or "UNVERIFIED")
+    summary_label = "Final approved summary" if verified else f"Final summary ({final.lower() or 'unverified'})"
 
     stats = [
         (str(source_count), "Sources analyzed"),
         (str(iterations), "Iterations"),
-        (str(loops), "Correction loops"),
+        (f"{state.get('hops', 0)}/{state.get('max_hops', 0)}", "Supervisor hops"),
         (f"{supported}/{len(claims)}" if claims else "—", "Claims verified"),
     ]
     stat_html = "".join(
@@ -848,13 +806,15 @@ def final_result_panel(
             '<div class="verdict-label">Correction detected</div>'
             f'<div class="verdict-claim">✕ &ldquo;{_escape(rejected_claim)}&rdquo;</div>'
             f'<div class="verdict-reason"><b>Reason:</b> {_escape(reason)}</div>'
-            f'<div class="verdict-fixed">→ Corrected and verified in iteration {iterations}.</div>'
+            f'<div class="verdict-fixed">→ Rewritten by the summarizer; final draft is iteration {iterations}.</div>'
             "</div>"
         )
 
     steps = list(_FLOW)
     if not loops:
         steps.remove("Correction Loop")
+    if state.get("require_approval"):
+        steps.append("Human Approval")
     flow_html = f'<span class="flow-arrow">→</span>'.join(
         f'<span class="flow-step">{_escape(step)}</span>' for step in steps
     )

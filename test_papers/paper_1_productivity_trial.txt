@@ -1,0 +1,41 @@
+TITLE: Four-Day Work Week Trial and Employee Productivity
+SOURCE TYPE: Synthetic test paper (fictional data, for testing only)
+TOPIC: Effects of a four-day work week on productivity and wellbeing
+
+1. STUDY DESIGN
+
+This trial followed 61 companies that moved from a five-day week to a four-day
+week for six months. Employees kept 100 percent of their pay while working about
+80 percent of their previous hours. Most participating companies were small
+office-based firms in marketing, software and professional services. Only 4 of
+the 61 companies worked in manufacturing or retail.
+
+Productivity was measured with each company's own metrics, such as revenue per
+employee or tickets resolved. Wellbeing was measured with a staff survey at the
+start and end of the trial.
+
+2. PRODUCTIVITY RESULTS
+
+Average revenue across the participating companies rose by 1.4 percent during
+the trial compared with the same period a year earlier. The authors note that
+this change is small and is not statistically significant. Their conclusion is
+that productivity was maintained, not that it increased.
+
+At the end of the trial, 56 of the 61 companies chose to continue the four-day
+week, and 18 made it permanent.
+
+3. WELLBEING RESULTS
+
+Self-reported burnout fell: 71 percent of employees reported lower levels of
+burnout at the end of the trial. Sick days fell by about 65 percent compared
+with the year before. Staff turnover dropped by 57 percent over the trial
+period.
+
+4. LIMITATIONS
+
+The companies volunteered for the trial, so they were likely already open to
+flexible working and may not represent typical employers. The trial lasted only
+six months, so the long-term effects are unknown. Wellbeing results are based on
+self-reported surveys, which can be influenced by employees' enthusiasm for the
+policy. The authors state that the results should not be generalised to sectors
+that need staff present at fixed hours, such as healthcare or retail.

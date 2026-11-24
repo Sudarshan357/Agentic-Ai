@@ -14,3 +14,6 @@ langgraph>=0.2
 langchain-core>=0.3
 langchain-ollama>=0.2
 pypdf>=4          # text extraction from uploaded PDF sources
+langgraph-checkpoint-sqlite>=2   # short-term (SqliteSaver) + long-term (SqliteStore) memory
+chromadb>=1.0                   # RAG vector store
+langchain-chroma>=0.2
