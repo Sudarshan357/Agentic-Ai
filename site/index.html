@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Multi-Step Research Summarizer — Self-Verifying Agentic Research Workflow</title>
+<meta name="description" content="A fully local LangGraph multi-agent workflow that summarizes research papers, fact-checks its own claims against the sources, and rewrites itself until every claim is supported." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128269;</text></svg>" />
+<style>
+  :root{
+    --bg:#070b18;
+    --bg-soft:#0d1424;
+    --card:rgba(255,255,255,.035);
+    --card-hover:rgba(255,255,255,.06);
+    --border:rgba(255,255,255,.09);
+    --border-strong:rgba(255,255,255,.16);
+    --text:#e8ecf5;
+    --muted:#93a0bb;
+    --dim:#69769033;
+    --cyan:#38e1f0;
+    --violet:#8b7cf8;
+    --green:#3ddc97;
+    --amber:#ffb44d;
+    --red:#ff6b81;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --maxw:1180px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(900px 500px at 12% -5%,rgba(56,225,240,.13),transparent 60%),
+      radial-gradient(800px 500px at 88% 5%,rgba(139,124,248,.15),transparent 60%),
+      radial-gradient(700px 600px at 50% 100%,rgba(61,220,151,.06),transparent 60%);
+  }
+  .wrap{position:relative;z-index:1;max-width:var(--maxw);margin:0 auto;padding:0 24px}
+  a{color:inherit;text-decoration:none}
+
+  /* ---------- NAV ---------- */
+  header.nav{
+    position:sticky;top:0;z-index:50;
+    backdrop-filter:blur(14px);
+    background:rgba(7,11,24,.78);
+    border-bottom:1px solid var(--border);
+  }
+  .nav-inner{max-width:var(--maxw);margin:0 auto;padding:13px 24px;display:flex;align-items:center;gap:18px}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:650;letter-spacing:-.2px}
+  .brand .logo{
+    width:32px;height:32px;border-radius:9px;flex:none;
+    background:linear-gradient(135deg,var(--cyan),var(--violet));
+    display:grid;place-items:center;font-size:17px;
+    box-shadow:0 0 22px rgba(56,225,240,.35);
+  }
+  .nav-links{margin-left:auto;display:flex;gap:22px;align-items:center;font-size:14px;color:var(--muted)}
+  .nav-links a:hover{color:var(--text)}
+  .nav-cta{
+    padding:7px 15px;border-radius:8px;font-size:13.5px;font-weight:600;
+    border:1px solid var(--border-strong);color:var(--text);
+  }
+  .nav-cta:hover{background:var(--card-hover);border-color:var(--cyan)}
+  @media(max-width:820px){.nav-links a:not(.nav-cta){display:none}}
+
+  /* ---------- HERO ---------- */
+  .hero{padding:78px 0 54px;text-align:center}
+  .pill{
+    display:inline-flex;align-items:center;gap:9px;
+    padding:6px 14px;border-radius:100px;font-size:12.5px;font-weight:600;
+    border:1px solid rgba(61,220,151,.32);
+    background:rgba(61,220,151,.09);color:#8ff0c6;
+    letter-spacing:.3px;
+  }
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green);animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  h1{
+    font-size:clamp(32px,5.4vw,58px);line-height:1.1;font-weight:760;
+    letter-spacing:-1.6px;margin:24px 0 18px;
+  }
+  h1 .grad{
+    background:linear-gradient(100deg,var(--cyan),var(--violet) 55%,var(--green));
+    -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+  }
+  .lede{font-size:clamp(15.5px,1.9vw,19px);color:var(--muted);max-width:760px;margin:0 auto}
+  .lede b{color:var(--text);font-weight:600}
+  .cta-row{display:flex;gap:13px;justify-content:center;flex-wrap:wrap;margin-top:32px}
+  .btn{
+    display:inline-flex;align-items:center;gap:9px;
+    padding:12px 22px;border-radius:11px;font-size:14.5px;font-weight:630;
+    border:1px solid var(--border-strong);transition:.18s;
+  }
+  .btn.primary{
+    background:linear-gradient(135deg,var(--cyan),var(--violet));
+    color:#04121b;border:none;font-weight:700;
+    box-shadow:0 8px 30px -8px rgba(56,225,240,.6);
+  }
+  .btn.primary:hover{transform:translateY(-2px);box-shadow:0 12px 34px -8px rgba(56,225,240,.75)}
+  .btn.ghost:hover{background:var(--card-hover);border-color:var(--cyan)}
+  .badges{display:flex;gap:9px;flex-wrap:wrap;justify-content:center;margin-top:30px}
+  .badge{
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.4px;
+    padding:5px 11px;border-radius:7px;color:var(--muted);
+    border:1px solid var(--border);background:var(--card);
+  }
+
+  /* ---------- SECTIONS ---------- */
+  section{padding:64px 0}
+  .sec-head{margin-bottom:36px}
+  .kicker{
+    font-family:var(--mono);font-size:12px;letter-spacing:2px;
+    text-transform:uppercase;color:var(--cyan);font-weight:600;
+  }
+  h2{font-size:clamp(24px,3.4vw,36px);font-weight:720;letter-spacing:-.9px;margin:10px 0 12px}
+  .sec-sub{color:var(--muted);max-width:720px;font-size:15.5px}
+
+  /* ---------- DEMO BANNER ---------- */
+  .demo{
+    display:flex;gap:20px;align-items:center;flex-wrap:wrap;
+    padding:22px 26px;border-radius:16px;
+    border:1px solid rgba(56,225,240,.3);
+    background:linear-gradient(120deg,rgba(56,225,240,.09),rgba(139,124,248,.07));
+  }
+  .demo .txt{flex:1;min-width:260px}
+  .demo h3{font-size:17px;font-weight:680;margin-bottom:5px}
+  .demo p{font-size:13.5px;color:var(--muted)}
+  .demo code{
+    font-family:var(--mono);font-size:12px;color:var(--cyan);
+    background:rgba(0,0,0,.35);padding:2px 7px;border-radius:5px;
+  }
+
+  /* ---------- FEATURE GRID ---------- */
+  .grid{display:grid;gap:16px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  @media(max-width:900px){.g3{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:620px){.g3,.g2{grid-template-columns:1fr}}
+  .card{
+    padding:22px;border-radius:14px;
+    border:1px solid var(--border);background:var(--card);
+    transition:.2s;
+  }
+  .card:hover{background:var(--card-hover);border-color:var(--border-strong);transform:translateY(-3px)}
+  .card .ico{font-size:21px;margin-bottom:11px;display:block}
+  .card h3{font-size:15.5px;font-weight:660;margin-bottom:7px;letter-spacing:-.2px}
+  .card p{font-size:13.6px;color:var(--muted);line-height:1.6}
+
+  /* ---------- PIPELINE ---------- */
+  .pipeline{
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center;
+    padding:30px 22px;border-radius:16px;
+    border:1px solid var(--border);background:rgba(0,0,0,.25);
+  }
+  .node{
+    font-family:var(--mono);font-size:12.5px;font-weight:600;
+    padding:11px 16px;border-radius:10px;
+    border:1px solid var(--border-strong);background:var(--bg-soft);
+    white-space:nowrap;
+  }
+  .node.llm{border-color:rgba(139,124,248,.55);color:#c3bbff;box-shadow:0 0 18px -6px rgba(139,124,248,.6)}
+  .node.det{border-color:rgba(61,220,151,.5);color:#9bf0cd}
+  .node.mem{border-color:rgba(56,225,240,.5);color:#9beeff}
+  .node.io{border-color:var(--border);color:var(--muted)}
+  .node.super{border-color:rgba(255,180,77,.6);color:#ffd79a;box-shadow:0 0 18px -6px rgba(255,180,77,.6)}
+  .arrow{color:var(--dim);font-size:17px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;justify-content:center;margin-top:22px;font-size:12.5px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+
+  /* ---------- TABLE ---------- */
+  .tbl-wrap{overflow-x:auto;border-radius:14px;border:1px solid var(--border);background:var(--card)}
+  table{width:100%;border-collapse:collapse;font-size:14px;min-width:560px}
+  th,td{text-align:left;padding:13px 18px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{
+    font-family:var(--mono);font-size:11.5px;letter-spacing:1.2px;
+    text-transform:uppercase;color:var(--muted);font-weight:600;
+    background:rgba(255,255,255,.03);
+  }
+  tr:last-child td{border-bottom:none}
+  td:first-child{font-family:var(--mono);font-size:12.8px;color:#c9d4ea;font-weight:550;white-space:nowrap}
+  td{color:var(--muted)}
+  tbody tr:hover{background:rgba(255,255,255,.022)}
+
+  /* ---------- STEPS ---------- */
+  .steps{display:flex;flex-direction:column;gap:0;counter-reset:s}
+  .step{display:flex;gap:20px;padding:18px 0;border-bottom:1px dashed var(--border)}
+  .step:last-child{border-bottom:none}
+  .step .num{
+    counter-increment:s;flex:none;width:34px;height:34px;border-radius:9px;
+    display:grid;place-items:center;font-family:var(--mono);font-size:13.5px;font-weight:700;
+    background:linear-gradient(135deg,rgba(56,225,240,.16),rgba(139,124,248,.16));
+    border:1px solid var(--border-strong);color:var(--cyan);
+  }
+  .step .num::before{content:counter(s)}
+  .step .body h4{font-size:15px;font-weight:640;margin-bottom:4px}
+  .step .body p{font-size:13.8px;color:var(--muted)}
+  .step .body .tag{
+    font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:5px;
+    background:rgba(139,124,248,.14);color:#c3bbff;margin-left:8px;
+  }
+
+  /* ---------- SCREENSHOTS ---------- */
+  .shots{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}
+  @media(max-width:760px){.shots{grid-template-columns:1fr}}
+  .shot{
+    border-radius:14px;overflow:hidden;border:1px solid var(--border);
+    background:var(--bg-soft);cursor:zoom-in;transition:.2s;
+  }
+  .shot:hover{border-color:var(--cyan);transform:translateY(-3px)}
+  .shot img{width:100%;display:block;aspect-ratio:16/9;object-fit:cover;object-position:top}
+  .shot .cap{padding:12px 16px;font-size:13px;color:var(--muted);border-top:1px solid var(--border)}
+  .shot .cap b{color:var(--text);font-weight:600;display:block;font-size:13.5px;margin-bottom:2px}
+
+  /* ---------- CODE ---------- */
+  pre{
+    font-family:var(--mono);font-size:13px;line-height:1.7;
+    background:rgba(0,0,0,.45);border:1px solid var(--border);
+    border-radius:12px;padding:20px 22px;overflow-x:auto;color:#cfe0f5;
+  }
+  pre .c{color:#6d7d99}
+  pre .k{color:var(--violet)}
+  pre .s{color:#9bf0cd}
+
+  /* ---------- CALLOUT ---------- */
+  .callout{
+    padding:22px 24px;border-radius:14px;border:1px solid rgba(255,180,77,.28);
+    background:rgba(255,180,77,.06);
+  }
+  .callout h3{font-size:15.5px;font-weight:660;margin-bottom:8px;color:#ffd79a}
+  .callout p{font-size:13.8px;color:var(--muted)}
+  .callout ul{margin:10px 0 0 18px;font-size:13.6px;color:var(--muted)}
+  .callout li{margin-bottom:5px}
+  .callout code{font-family:var(--mono);font-size:12.2px;color:#ffd79a}
+
+  /* ---------- STACK ---------- */
+  .stack{display:flex;flex-wrap:wrap;gap:10px}
+  .chip{
+    font-family:var(--mono);font-size:12.3px;
+    padding:8px 14px;border-radius:9px;
+    border:1px solid var(--border);background:var(--card);color:#c6d2e8;
+  }
+  .chip b{color:var(--cyan);font-weight:600}
+
+  /* ---------- LIGHTBOX ---------- */
+  #lb{
+    position:fixed;inset:0;z-index:100;display:none;
+    background:rgba(3,6,14,.94);backdrop-filter:blur(6px);
+    padding:44px 24px;cursor:zoom-out;
+  }
+  #lb.on{display:grid;place-items:center}
+  #lb img{max-width:100%;max-height:100%;border-radius:12px;border:1px solid var(--border-strong)}
+
+  /* ---------- FOOTER ---------- */
+  footer{border-top:1px solid var(--border);padding:40px 0;margin-top:20px}
+  .foot{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center;font-size:13.5px;color:var(--muted)}
+  .foot a:hover{color:var(--cyan)}
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <div class="brand"><span class="logo">&#128269;</span> Research Summarizer</div>
+    <nav class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#flow">How it works</a>
+      <a href="#screenshots">Screenshots</a>
+      <a href="#run">Run locally</a>
+      <a class="nav-cta" href="https://github.com/Sudarshan357/multi-step-research-summarizer" target="_blank" rel="noopener">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- ============ HERO ============ -->
+  <section class="hero">
+    <span class="pill"><span class="dot"></span> RUNS 100% LOCALLY &middot; NO API KEYS</span>
+    <h1>A research summarizer that <span class="grad">fact-checks itself</span><br/>against its own sources</h1>
+    <p class="lede">
+      A multi-agent <b>LangGraph</b> workflow that reads your papers, writes a summary,
+      <b>verifies every claim</b> against the retrieved evidence, and automatically rewrites
+      the parts it cannot support &mdash; looping until the summary is defensible, then pausing
+      for human approval. Powered entirely by local <b>Ollama</b> models.
+    </p>
+    <div class="cta-row">
+      <a class="btn primary" href="#screenshots">View screenshots</a>
+      <a class="btn ghost" href="https://github.com/Sudarshan357/multi-step-research-summarizer" target="_blank" rel="noopener">Browse the code</a>
+    </div>
+    <div class="badges">
+      <span class="badge">LangGraph 1.x</span>
+      <span class="badge">Ollama &middot; qwen2.5:3b</span>
+      <span class="badge">nomic-embed-text</span>
+      <span class="badge">Chroma RAG</span>
+      <span class="badge">SQLite memory</span>
+      <span class="badge">Streamlit UI</span>
+      <span class="badge">Python 3.13</span>
+    </div>
+  </section>
+
+  <!-- ============ LIVE DEMO ============ -->
+  <section id="demo" style="padding-top:12px">
+    <div class="demo">
+      <div class="txt">
+        <h3>Live demo (temporary)</h3>
+        <p>
+          The real app is a long-running Streamlit + Ollama server, so it stays on this machine
+          and is exposed through a Cloudflare quick tunnel. This URL is <b>ephemeral</b> and
+          changes whenever the tunnel restarts.
+        </p>
+      </div>
+      <a class="btn primary" href="https://earth-work-recordings-absolutely.trycloudflare.com" target="_blank" rel="noopener">Open live app ↗</a>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:12px;font-family:var(--mono)">
+      https://earth-work-recordings-absolutely.trycloudflare.com
+    </p>
+  </section>
+
+  <!-- ============ FEATURES ============ -->
+  <section id="features">
+    <div class="sec-head">
+      <div class="kicker">Capabilities</div>
+      <h2>What makes it different</h2>
+      <p class="sec-sub">Most summarizers generate text and stop. This one refuses to trust its own output.</p>
+    </div>
+    <div class="grid g3">
+      <div class="card">
+        <span class="ico">&#129504;</span>
+        <h3>Supervisor-orchestrated agents</h3>
+        <p>A rule-based supervisor routes between reader, RAG indexer, summarizer, fact-checker, guard, and reviewer over a LangGraph <code>StateGraph</code> with true cyclic edges.</p>
+      </div>
+      <div class="card">
+        <span class="ico">&#128260;</span>
+        <h3>Self-correction loop</h3>
+        <p>Unsupported claims route the graph <em>back</em> to the summarizer with the critic's written feedback and fresh evidence &mdash; not a simple retry.</p>
+      </div>
+      <div class="card">
+        <span class="ico">&#9878;</span>
+        <h3>Hybrid verification</h3>
+        <p>LLM judgment <b>plus</b> deterministic, negation-aware regex guards for over-claims. Model-independent guarantees.</p>
+      </div>
+      <div class="card">
+        <span class="ico">&#128269;</span>
+        <h3>Claim-level evidence tracing</h3>
+        <p>Every sentence gets a verdict &mdash; SUPPORTED / PARTIAL / UNSUPPORTED &mdash; with a reason, source file, and the exact retrieved passages.</p>
+      </div>
+      <div class="card">
+        <span class="ico">&#129513;</span>
+        <h3>Two-tier memory</h3>
+        <p>SQLite checkpointer for thread state (enables pause/resume) plus a semantic long-term store of lessons and approved summaries.</p>
+      </div>
+      <div class="card">
+        <span class="ico">&#128218;</span>
+        <h3>Real RAG pipeline</h3>
+        <p>Sentence-aware chunking with overlap, per-corpus Chroma collections, cosine similarity, and vector reuse for repeat uploads.</p>
+      </div>
+      <div class="card">
+        <span class="ico">&#128104;&#8205;&#128187;</span>
+        <h3>Human in the loop</h3>
+        <p>The graph <code>interrupt()</code>s before finalizing. Approve, or request changes with notes that feed straight back into the rewrite.</p>
+      </div>
+      <div class="card">
+        <span class="ico">&#128737;</span>
+        <h3>Loop safety rails</h3>
+        <p>Configurable correction-attempt cap and supervisor hop limit, plus a LangGraph recursion ceiling, prevent runaway cycles.</p>
+      </div>
+      <div class="card">
+        <span class="ico">&#128202;</span>
+        <h3>Live telemetry UI</h3>
+        <p>Pulsing SVG graph diagram, node timeline, metric tiles, and before/after summary comparison with unsupported claims highlighted in red.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ARCHITECTURE ============ -->
+  <section id="architecture">
+    <div class="sec-head">
+      <div class="kicker">Architecture</div>
+      <h2>The supervisor graph</h2>
+      <p class="sec-sub">Defined in <code>graph.py</code>. The supervisor is a pure function over state &mdash; no LLM required for routing, so it never stalls.</p>
+    </div>
+
+    <div class="pipeline">
+      <span class="node io">START</span>
+      <span class="arrow">&#8594;</span>
+      <span class="node det">read_source</span>
+      <span class="arrow">&#8594;</span>
+      <span class="node mem">index_sources</span>
+      <span class="arrow">&#8594;</span>
+      <span class="node super">supervisor</span>
+      <span class="arrow">&#8594;</span>
+      <span class="node llm">summarizer</span>
+      <span class="arrow">&#8594;</span>
+      <span class="node llm">fact_checker</span>
+      <span class="arrow">&#8594;</span>
+      <span class="node det">guard</span>
+      <span class="arrow">&#8594;</span>
+      <span class="node io">human_review</span>
+      <span class="arrow">&#8594;</span>
+      <span class="node det">finalize</span>
+      <span class="arrow">&#8594;</span>
+      <span class="node io">END</span>
+    </div>
+    <div class="legend">
+      <span><i class="sw" style="background:rgba(139,124,248,.6)"></i> LLM agent</span>
+      <span><i class="sw" style="background:rgba(61,220,151,.6)"></i> Deterministic</span>
+      <span><i class="sw" style="background:rgba(56,225,240,.6)"></i> Memory / RAG</span>
+      <span><i class="sw" style="background:rgba(255,180,77,.6)"></i> Supervisor router</span>
+      <span><i class="sw" style="background:rgba(255,255,255,.25)"></i> I/O &amp; control</span>
+    </div>
+    <p style="text-align:center;color:var(--muted);font-size:13.5px;margin-top:18px">
+      &#8635; The <b>summarizer &#8592; fact_checker</b> edge is a real cycle: failed claims loop back with feedback until verified or the attempt limit is hit.
+    </p>
+
+    <div style="margin-top:34px" class="tbl-wrap">
+      <table>
+        <thead><tr><th>Node</th><th>Type</th><th>Responsibility</th></tr></thead>
+        <tbody>
+          <tr><td>read_source</td><td>Deterministic</td><td>Loads the selected PDF/TXT papers into state via pypdf. No LLM involved.</td></tr>
+          <tr><td>index_sources</td><td>RAG</td><td>Chunks papers (~120 words, 30-word overlap) and embeds them into Chroma. Reuses existing vectors for repeat uploads.</td></tr>
+          <tr><td>supervisor</td><td>Router</td><td>Pure rule-based decision over state fields. Counts hops and picks the next agent.</td></tr>
+          <tr><td>summarizer</td><td>LLM agent</td><td>Retrieves evidence for 5 query sets, recalls past lessons, and writes a 4&ndash;6 sentence summary.</td></tr>
+          <tr><td>fact_checker</td><td>LLM agent</td><td>Splits the summary into sentences, retrieves top passages per claim, and returns verdicts as strict JSON.</td></tr>
+          <tr><td>guard</td><td>Deterministic</td><td>Regex checks the model cannot argue with: absolutes, numbers absent from sources, chatty preambles, length.</td></tr>
+          <tr><td>human_review</td><td>interrupt()</td><td>Pauses the graph and saves a checkpoint, awaiting Approve or Request-changes.</td></tr>
+          <tr><td>finalize</td><td>Terminal</td><td>Computes the final status and persists the approved summary to long-term memory.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ FLOW ============ -->
+  <section id="flow">
+    <div class="sec-head">
+      <div class="kicker">End to end</div>
+      <h2>What happens when you press Run</h2>
+      <p class="sec-sub">Typical CPU runtime is roughly 35&ndash;50 seconds for a two-source run.</p>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="num"></div><div class="body">
+        <h4>Sources are read and indexed</h4>
+        <p>Uploaded papers are parsed and chunked, then embedded with <code>nomic-embed-text</code> into a per-corpus Chroma collection.</p>
+      </div></div>
+      <div class="step"><div class="num"></div><div class="body">
+        <h4>First summary is drafted</h4>
+        <p>The summarizer recalls relevant lessons from long-term memory and writes a grounded summary from retrieved passages.</p>
+      </div></div>
+      <div class="step"><div class="num"></div><div class="body">
+        <h4>Claims are fact-checked <span class="tag">parallel</span></h4>
+        <p>Each sentence is judged independently against retrieved evidence using a thread pool. Results are cached so identical claims are never re-judged.</p>
+      </div></div>
+      <div class="step"><div class="num"></div><div class="body">
+        <h4>Unsupported claims trigger a rewrite</h4>
+        <p>The supervisor routes back to the summarizer with the failed claims, the critic's reasons, and richer evidence &mdash; an informed revision, not a blind retry.</p>
+      </div></div>
+      <div class="step"><div class="num"></div><div class="body">
+        <h4>Deterministic guard runs</h4>
+        <p>Even when the LLM says "supported", the guard catches absolutes and invented numbers the model cannot reliably police itself.</p>
+      </div></div>
+      <div class="step"><div class="num"></div><div class="body">
+        <h4>Human approval gate</h4>
+        <p>The graph interrupts and persists state to SQLite. The user approves, or sends notes back into another revision cycle.</p>
+      </div></div>
+      <div class="step"><div class="num"></div><div class="body">
+        <h4>Learning is persisted</h4>
+        <p>Caught mistakes become semantic "lessons" and the approved summary is stored for future runs on the same corpus.</p>
+      </div></div>
+    </div>
+  </section>
+
+  <!-- ============ VERIFICATION ============ -->
+  <section id="verification">
+    <div class="sec-head">
+      <div class="kicker">Trust model</div>
+      <h2>Why the verification holds up</h2>
+      <p class="sec-sub">Small local models are unreliable judges. The design compensates with structure.</p>
+    </div>
+    <div class="grid g2">
+      <div class="callout">
+        <h3>&#9878; Hybrid verification</h3>
+        <p>Every claim is judged twice &mdash; once by the model against retrieved evidence, and once by a deterministic rule set that the model cannot talk its way out of.</p>
+        <ul>
+          <li>14 regex patterns for absolution language ("zero impact", "completely clean")</li>
+          <li><b>Negation-aware</b>: "not zero impact" is correctly not flagged</li>
+          <li>Numbers in the summary are cross-checked against the sources</li>
+          <li>Chatty preambles and leaked file names are rejected</li>
+        </ul>
+      </div>
+      <div class="callout">
+        <h3>&#127916; Controlled demo mode</h3>
+        <p>To make the correction loop observable on demand, demo mode injects exactly one deliberate over-claim into the <em>first</em> summary only.</p>
+        <ul>
+          <li>The over-claim is generated from the papers' most frequent subject</li>
+          <li>The fact-checker is <b>not</b> told about it &mdash; it is judged like any other claim</li>
+          <li>Later iterations contain no injection, so the loop must genuinely fix it</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SCREENSHOTS ============ -->
+  <section id="screenshots">
+    <div class="sec-head">
+      <div class="kicker">Product</div>
+      <h2>Screenshots</h2>
+      <p class="sec-sub">Captured from the running Streamlit app. Click any image to enlarge.</p>
+    </div>
+    <div class="shots">
+      <div class="shot"><img src="assets/01_workflow_verified.png" alt="Workflow tab showing a verified run" loading="lazy"/><div class="cap"><b>Workflow &mdash; verified run</b>Live graph diagram with the active node pulsing.</div></div>
+      <div class="shot"><img src="assets/02_correction_loop_active.png" alt="Correction loop active" loading="lazy"/><div class="cap"><b>Correction loop active</b>The loop-back edge lighting up after a failed claim.</div></div>
+      <div class="shot"><img src="assets/03_sources.png" alt="Sources tab" loading="lazy"/><div class="cap"><b>Sources</b>Uploaded papers with word counts and previews.</div></div>
+      <div class="shot"><img src="assets/04_fact_check.png" alt="Fact check tab" loading="lazy"/><div class="cap"><b>Fact Check</b>Claim-by-claim verdicts with reasons and evidence.</div></div>
+      <div class="shot"><img src="assets/05_full_trace.png" alt="Full trace tab" loading="lazy"/><div class="cap"><b>Full Trace</b>Every routing decision and the raw final state.</div></div>
+      <div class="shot"><img src="assets/06_architecture.png" alt="Architecture tab" loading="lazy"/><div class="cap"><b>Architecture</b>In-app graph diagram and node reference.</div></div>
+    </div>
+  </section>
+
+  <!-- ============ STACK ============ -->
+  <section id="stack">
+    <div class="sec-head">
+      <div class="kicker">Under the hood</div>
+      <h2>Technology stack</h2>
+    </div>
+    <div class="stack" style="margin-bottom:30px">
+      <span class="chip"><b>Orchestration</b> LangGraph StateGraph</span>
+      <span class="chip"><b>Generation</b> Ollama &middot; qwen2.5:3b</span>
+      <span class="chip"><b>Embeddings</b> nomic-embed-text (768d)</span>
+      <span class="chip"><b>Vector store</b> Chroma (persistent, cosine)</span>
+      <span class="chip"><b>Thread memory</b> SqliteSaver</span>
+      <span class="chip"><b>Long-term memory</b> SqliteStore</span>
+      <span class="chip"><b>UI</b> Streamlit + custom CSS/SVG</span>
+      <span class="chip"><b>PDF parsing</b> pypdf</span>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>File</th><th>Responsibility</th></tr></thead>
+        <tbody>
+          <tr><td>app.py</td><td>Streamlit layout and orchestration only</td></tr>
+          <tr><td>ui.py</td><td>Design tokens, CSS, SVG diagram, card builders</td></tr>
+          <tr><td>graph.py</td><td>StateGraph construction, streaming driver, run/resume API</td></tr>
+          <tr><td>nodes.py</td><td>All nodes and agents plus the deterministic guards</td></tr>
+          <tr><td>memory.py</td><td>Checkpointer, store, embeddings, stable corpus IDs</td></tr>
+          <tr><td>rag.py</td><td>Chroma chunking, indexing, and retrieval</td></tr>
+          <tr><td>state.py</td><td>ResearchState schema and initial state</td></tr>
+          <tr><td>prompts.py</td><td>All prompt templates</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ RUN LOCALLY ============ -->
+  <section id="run">
+    <div class="sec-head">
+      <div class="kicker">Get started</div>
+      <h2>Run it locally</h2>
+      <p class="sec-sub">Requires Python 3.11+ and Ollama. No API keys, no cloud accounts.</p>
+    </div>
+    <pre><span class="c"># 1. install Ollama and pull the models</span>
+ollama pull qwen2.5:3b
+ollama pull nomic-embed-text
+
+<span class="c"># 2. install Python dependencies</span>
+python -m pip install -r requirements.txt
+
+<span class="c"># 3. launch the app</span>
+python -m streamlit run app.py
+
+<span class="c"># opens at http://localhost:8501</span></pre>
+
+    <div class="callout" style="margin-top:26px">
+      <h3>&#9888; Why this is not deployed on Vercel</h3>
+      <p>This page is the static site on Vercel. The application itself cannot run there, for four concrete reasons:</p>
+      <ul>
+        <li><b>Local LLM</b> &mdash; it needs a running <code>ollama serve</code> with multi-GB model weights and a persistent process. Vercel functions are stateless, size-limited, and have no GPU.</li>
+        <li><b>SQLite on disk</b> &mdash; checkpoints and memory live in <code>memory_data/*.sqlite</code>. Vercel's filesystem is read-only except <code>/tmp</code>, which is per-instance and wiped.</li>
+        <li><b>Chroma index</b> &mdash; the persistent vector store has the same ephemeral-filesystem problem.</li>
+        <li><b>Streamlit</b> &mdash; it is a long-running websocket server; Vercel is built for static and serverless workloads.</li>
+      </ul>
+      <p style="margin-top:10px">A Vercel-native version would require replacing Ollama with a hosted LLM API and swapping disk-backed memory for a hosted database &mdash; a full rewrite, not a config change.</p>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      <div style="color:var(--text);font-weight:620;margin-bottom:4px">Multi-Step Research Summarizer</div>
+      <div>A self-verifying agentic research workflow &middot; runs entirely on your machine.</div>
+    </div>
+    <div style="display:flex;gap:20px">
+      <a href="https://github.com/Sudarshan357/multi-step-research-summarizer" target="_blank" rel="noopener">GitHub ↗</a>
+      <a href="https://earth-work-recordings-absolutely.trycloudflare.com" target="_blank" rel="noopener">Live demo ↗</a>
+    </div>
+  </div>
+</footer>
+
+<div id="lb"><img alt="enlarged screenshot"/></div>
+<script>
+  var lb = document.getElementById('lb');
+  var lbImg = lb.querySelector('img');
+  document.querySelectorAll('.shot img').forEach(function (img) {
+    img.addEventListener('click', function () {
+      lbImg.src = img.src;
+      lbImg.alt = img.alt;
+      lb.classList.add('on');
+    });
+  });
+  lb.addEventListener('click', function () { lb.classList.remove('on'); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') lb.classList.remove('on');
+  });
+</script>
+</body>
+</html>
