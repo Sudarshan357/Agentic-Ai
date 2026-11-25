@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import time
 import urllib.error
@@ -56,15 +57,20 @@ def upload_dir() -> str:
     return created
 
 
-def save_uploads(files) -> list[str]:
-    """Write the uploaded papers into the session folder, replacing any previous set."""
+def _reset_upload_dir() -> str:
+    """Clear any previous files in the session upload folder and return its path."""
     target = upload_dir()
     for stale in os.listdir(target):
         try:
             os.remove(os.path.join(target, stale))
         except OSError:
             pass
+    return target
 
+
+def save_uploads(files) -> list[str]:
+    """Write the uploaded papers into the session folder, replacing any previous set."""
+    target = _reset_upload_dir()
     saved: list[str] = []
     for item in files:
         name = os.path.basename(item.name)
@@ -72,6 +78,14 @@ def save_uploads(files) -> list[str]:
             handle.write(item.getbuffer())
         saved.append(name)
     return sorted(saved)
+
+
+def load_sample_sources(sample_dir: str, filenames: list[str]) -> list[str]:
+    """Copy bundled sample papers into the session folder."""
+    target = _reset_upload_dir()
+    for name in filenames:
+        shutil.copyfile(os.path.join(sample_dir, name), os.path.join(target, name))
+    return sorted(filenames)
 
 
 def list_sources() -> list[str]:
@@ -384,6 +398,19 @@ if uploaded:
         st.session_state.upload_signature = signature
         st.session_state.result = None
 
+sample_dir = os.path.join(HERE, "sources")
+sample_files = (
+    sorted(f for f in os.listdir(sample_dir) if is_supported_source(f))
+    if os.path.isdir(sample_dir)
+    else []
+)
+if 2 <= len(sample_files) <= 3:
+    if st.button("Load sample papers (demo corpus)", key="load_samples"):
+        load_sample_sources(sample_dir, sample_files)
+        st.session_state.upload_signature = [("sample", name) for name in sample_files]
+        st.session_state.result = None
+        st.rerun()
+
 all_documents, upload_problems = load_documents()
 for problem in upload_problems:
     st.error(problem)
@@ -391,8 +418,8 @@ for problem in upload_problems:
 count = len(all_documents)
 ready = 2 <= count <= 3
 
-if not uploaded:
-    st.info("Upload 2 or 3 research papers to begin. Nothing else is used as input.")
+if not all_documents and not uploaded:
+    st.info("Upload 2 or 3 research papers (or load the sample papers) to begin. Nothing else is used as input.")
 elif count == 1:
     st.warning("Only 1 readable source. Upload at least 2 so claims can be cross-checked.")
 elif count > 3:
